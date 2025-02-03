@@ -87,6 +87,10 @@ impl Stack {
         self.0.push((k, v));
     }
 
+    fn pop(&mut self) -> Option<(String, i32)> {
+        self.0.pop()
+    }
+
     fn assign<Q>(&mut self, k: &Q, v: i32)
     where
         String: Borrow<Q>,
@@ -131,7 +135,7 @@ impl Expr {
                 let lhs = lhs_expr.eval_impl(stack).unwrap_reference();
                 let rhs = rhs_expr.eval_impl(stack).unwrap_number();
                 stack.assign(&lhs, rhs);
-                Value::Void
+                Value::Number(rhs)
             }
             Expr::Seq(first_expr, second_expr) => {
                 first_expr.eval_impl(stack);
@@ -140,7 +144,9 @@ impl Expr {
             Expr::Let(_) => panic!("let is an intermediate node and should be absent"),
             Expr::Scope(var, expr) => {
                 stack.push(var.clone(), 0);
-                expr.eval_impl(stack)
+                let res = expr.eval_impl(stack);
+                stack.pop();
+                res
             }
             Expr::If(cond_expr, true_expr, false_expr) => {
                 let cond = cond_expr.eval_impl(stack).unwrap_number();
@@ -221,18 +227,35 @@ fn expr() -> impl Parser<char, Expr, Error = Simple<char>> {
 
         let assign = sum
             .clone()
-            .then(token("=").then(sum).repeated())
-            .map(|(a, b)| (b, a))
-            .foldr(|(_, rhs), lhs| Expr::Assign(Box::new(lhs), Box::new(rhs)));
+            .then(token("=").then(sum).map(|(_, e)| e).repeated())
+            .map(|(a, mut b): (Expr, Vec<Expr>)| {
+                b.insert(0, a);
+                let c = b.pop().unwrap();
+                (b, c)
+            })
+            .foldr(|lhs, rhs| {
+                Expr::Assign(
+                    Box::new(match lhs {
+                        Expr::Variable(var) => Expr::Reference(var),
+                        _ => lhs,
+                    }),
+                    Box::new(rhs),
+                )
+            });
 
         let stmt = choice((let_expr, assign)).padded();
 
-        stmt.clone().then(token(";").then(stmt).repeated()).foldl(
-            |first, (_, second)| match first {
+        stmt.clone()
+            .then(token(";").then(stmt.or_not()).map(|(_, e)| e.unwrap_or(Expr::Skip)).repeated())
+            .map(|(a, mut b)| {
+                b.insert(0, a);
+                let c = b.pop().unwrap();
+                (b, c)
+            })
+            .foldr(|first, second| match first {
                 Expr::Let(var) => Expr::Scope(var, Box::new(second)),
                 _ => Expr::Seq(Box::new(first), Box::new(second)),
-            },
-        )
+            })
     })
     .then_ignore(end())
 }
