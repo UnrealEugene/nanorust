@@ -58,8 +58,8 @@ pub enum Expr {
     Binary(BinaryOp, Box<Expr>, Box<Expr>),
     Assign(Box<Expr>, Box<Expr>),
     Seq(Box<Expr>, Box<Expr>),
-    Let(String),
-    Scope(String, Box<Expr>),
+    Let(String, Box<Expr>),
+    Scope(String, Box<Expr>, Box<Expr>),
     If(Box<Expr>, Box<Expr>, Box<Expr>),
 }
 
@@ -141,10 +141,11 @@ impl Expr {
                 first_expr.eval_impl(stack);
                 second_expr.eval_impl(stack)
             }
-            Expr::Let(_) => panic!("let is an intermediate node and should be absent"),
-            Expr::Scope(var, expr) => {
-                stack.push(var.clone(), 0);
-                let res = expr.eval_impl(stack);
+            Expr::Let(_, _) => panic!("let is an intermediate node and should be absent"),
+            Expr::Scope(var, val_expr, cont_expr) => {
+                let val = val_expr.eval_impl(stack).unwrap_number();
+                stack.push(var.clone(), val);
+                let res = cont_expr.eval_impl(stack);
                 stack.pop();
                 res
             }
@@ -165,8 +166,8 @@ impl Expr {
     }
 }
 
-fn expr() -> impl Parser<char, Expr, Error = Simple<char>> {
-    recursive(|expr| {
+fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
+    recursive(|stmt| {
         let token = |c| just(c).padded();
 
         let var = text::ident().padded();
@@ -175,65 +176,71 @@ fn expr() -> impl Parser<char, Expr, Error = Simple<char>> {
             .map(|s: String| Expr::Constant(s.parse().unwrap()))
             .padded();
 
-        let block = expr.clone().delimited_by(just("{"), just("}"));
+        let block = stmt.clone().delimited_by(just("{"), just("}"));
 
-        let let_expr = token("let").then(var).map(|(_, var)| Expr::Let(var));
+        let if_expr_cons = |expr| {
+            recursive(|if_stmt| {
+                token("if")
+                    .then(expr)
+                    .then(block.clone())
+                    .then(token("else").then(if_stmt.or(block.clone())).or_not())
+                    .map(|(((_, cond), if_true), if_false)| {
+                        Expr::If(
+                            Box::new(cond),
+                            Box::new(if_true),
+                            Box::new(if_false.map(|x| x.1).unwrap_or(Expr::Skip)),
+                        )
+                    })
+            })
+        };
 
-        let if_expr = recursive(|if_expr| {
-            token("if")
-                .then(expr.clone())
-                .then(block.clone())
-                .then(token("else").then(if_expr.or(block.clone())).or_not())
-                .map(|(((_, cond), if_true), if_false)| {
-                    Expr::If(
-                        Box::new(cond),
-                        Box::new(if_true),
-                        Box::new(if_false.map(|x| x.1).unwrap_or(Expr::Skip)),
-                    )
-                })
+        let expr = recursive(|expr| {
+            let atom = choice((
+                if_expr_cons(expr.clone()),
+                expr.clone().delimited_by(just('('), just(')')),
+                block.clone(),
+                var.map(|var| Expr::Variable(var)),
+                num,
+            ))
+            .padded();
+
+            let unary = token("-")
+                .repeated()
+                .then(atom)
+                .foldr(|op, x| Expr::Unary(op.into(), Box::new(x)));
+
+            let product = unary
+                .clone()
+                .then(
+                    choice((token("*").to(BinaryOp::Mul), token("/").to(BinaryOp::Div)))
+                        .then(unary)
+                        .repeated(),
+                )
+                .foldl(|lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)));
+
+            let sum = product
+                .clone()
+                .then(
+                    choice((token("+").to(BinaryOp::Add), token("-").to(BinaryOp::Sub)))
+                        .then(product)
+                        .repeated(),
+                )
+                .foldl(|lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)));
+
+            sum
         });
 
-        let atom = choice((
-            if_expr,
-            expr.clone().delimited_by(just('('), just(')')),
-            expr.clone().delimited_by(just('{'), just('}')),
-            var.map(|var| Expr::Variable(var)),
-            num,
-        ))
-        .padded();
+        let let_expr = token("let")
+            .then(var)
+            .then(token("=").then(expr.clone()).or_not())
+            .map(|((_, var), rhs)| {
+                Expr::Let(var, Box::new(rhs.map(|x| x.1).unwrap_or(Expr::Constant(0))))
+            });
 
-        let unary = token("-")
-            .repeated()
-            .then(atom)
-            .foldr(|op, x| Expr::Unary(op.into(), Box::new(x)));
-
-        let product = unary
+        let assign = expr
             .clone()
-            .then(
-                choice((token("*").to(BinaryOp::Mul), token("/").to(BinaryOp::Div)))
-                    .then(unary)
-                    .repeated(),
-            )
-            .foldl(|lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)));
-
-        let sum = product
-            .clone()
-            .then(
-                choice((token("+").to(BinaryOp::Add), token("-").to(BinaryOp::Sub)))
-                    .then(product)
-                    .repeated(),
-            )
-            .foldl(|lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)));
-
-        let assign = sum
-            .clone()
-            .then(token("=").then(sum).map(|(_, e)| e).repeated())
-            .map(|(a, mut b): (Expr, Vec<Expr>)| {
-                b.insert(0, a);
-                let c = b.pop().unwrap();
-                (b, c)
-            })
-            .foldr(|lhs, rhs| {
+            .then(token("=").then(expr.clone()).map(|(_, e)| e))
+            .map(|(lhs, rhs)| {
                 Expr::Assign(
                     Box::new(match lhs {
                         Expr::Variable(var) => Expr::Reference(var),
@@ -243,19 +250,33 @@ fn expr() -> impl Parser<char, Expr, Error = Simple<char>> {
                 )
             });
 
-        let stmt = choice((let_expr, assign)).padded();
+        let atom = choice((let_expr, assign, expr.clone())).padded();
 
-        stmt.clone()
-            .then(token(";").then(stmt.or_not()).map(|(_, e)| e.unwrap_or(Expr::Skip)).repeated())
-            .map(|(a, mut b)| {
-                b.insert(0, a);
-                let c = b.pop().unwrap();
-                (b, c)
-            })
-            .foldr(|first, second| match first {
-                Expr::Let(var) => Expr::Scope(var, Box::new(second)),
-                _ => Expr::Seq(Box::new(first), Box::new(second)),
-            })
+        // S -> A? | A? ; S | B S
+
+        block
+            .clone()
+            .or(if_expr_cons(expr.clone()))
+            .then(stmt.clone())
+            .map(|(a, b)| Expr::Seq(Box::new(a), Box::new(b)))
+            .or(atom
+                .clone()
+                .or_not()
+                .then(token(";").then(stmt.clone()).or_not())
+                .map(|(first_opt, second_opt)| {
+                    let first_expr = first_opt.unwrap_or(Expr::Skip);
+                    let second_expr = second_opt.map(|x| x.1).unwrap_or(Expr::Skip);
+                    match (first_expr, second_expr) {
+                        (Expr::Let(var, val_expr), inner_expr) => {
+                            Expr::Scope(var, val_expr, Box::new(inner_expr))
+                        }
+                        (Expr::Skip, second_expr) => second_expr,
+                        (first_expr, Expr::Skip) => first_expr,
+                        (first_expr, second_expr) => {
+                            Expr::Seq(Box::new(first_expr), Box::new(second_expr))
+                        }
+                    }
+                }))
     })
     .then_ignore(end())
 }
@@ -263,7 +284,7 @@ fn expr() -> impl Parser<char, Expr, Error = Simple<char>> {
 fn main() {
     let src = std::fs::read_to_string(std::env::args().nth(1).unwrap()).unwrap();
 
-    match expr().parse(src) {
+    match stmt().parse(src) {
         Ok(ast) => {
             println!("{:?}", ast);
             println!("{:?}", ast.eval())
