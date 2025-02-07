@@ -25,6 +25,13 @@ pub enum BinaryOp {
 }
 
 #[derive(Debug)]
+pub enum ValueType {
+    Data,
+    Reference,
+    Void,
+}
+
+#[derive(Debug, Clone)]
 pub enum Value {
     Number(i32),
     Reference(String),
@@ -49,29 +56,30 @@ impl Value {
 
 #[derive(Debug)]
 pub enum Expr {
-    Skip,
-    Ignore(Box<Expr>),
-    Variable(String),
-    Constant(i32),
-    Reference(String),
-    Unary(UnaryOp, Box<Expr>),
-    Binary(BinaryOp, Box<Expr>, Box<Expr>),
-    Assign(Box<Expr>, Box<Expr>),
-    Seq(Box<Expr>, Box<Expr>),
-    Let(String, Box<Expr>),
-    Scope(String, Box<Expr>, Box<Expr>),
-    If(Box<Expr>, Box<Expr>, Box<Expr>),
+    Skip,                                   // Void
+    Ignore(Box<Expr>),                      // Void
+    Variable(String),                       // any
+    Constant(i32),                          // Data
+    Reference(String),                      // Reference
+    Dereference(Box<Expr>),                 // any
+    Unary(UnaryOp, Box<Expr>),              // Data
+    Binary(BinaryOp, Box<Expr>, Box<Expr>), // Data
+    Assign(Box<Expr>, Box<Expr>),           // Void
+    Seq(Box<Expr>, Box<Expr>),              // any
+    Let(String, Box<Expr>),                 // Void
+    Scope(String, Box<Expr>, Box<Expr>),    // any
+    If(Box<Expr>, Box<Expr>, Box<Expr>),    // any
 }
 
 #[derive(Default)]
-struct Stack(Vec<(String, i32)>);
+struct Stack(Vec<(String, Value)>);
 
 impl Stack {
     fn new() -> Self {
         Self::default()
     }
 
-    fn get<Q>(&self, k: &Q) -> Option<i32>
+    fn get<Q>(&self, k: &Q) -> Option<Value>
     where
         String: Borrow<Q>,
         Q: Eq + ?Sized,
@@ -80,18 +88,18 @@ impl Stack {
             .iter()
             .rev()
             .find(|(var, _)| var.borrow() == k)
-            .map(|e| e.1)
+            .map(|e| e.1.clone())
     }
 
-    fn push(&mut self, k: String, v: i32) {
+    fn push(&mut self, k: String, v: Value) {
         self.0.push((k, v));
     }
 
-    fn pop(&mut self) -> Option<(String, i32)> {
+    fn pop(&mut self) -> Option<(String, Value)> {
         self.0.pop()
     }
 
-    fn assign<Q>(&mut self, k: &Q, v: i32)
+    fn assign<Q>(&mut self, k: &Q, v: Value)
     where
         String: Borrow<Q>,
         Q: Eq + ?Sized,
@@ -112,9 +120,13 @@ impl Expr {
                 expr.eval_impl(stack);
                 Value::Void
             }
-            Expr::Variable(var) => Value::Number(stack.get(var).unwrap()),
+            Expr::Variable(var) => stack.get(var).unwrap_or(Value::Void),
             Expr::Constant(val) => Value::Number(val.clone()),
             Expr::Reference(var) => Value::Reference(var.clone()),
+            Expr::Dereference(expr) => match expr.eval_impl(stack) {
+                Value::Reference(var) => stack.get(&var).unwrap_or(Value::Void),
+                _ => Value::Void,
+            },
             Expr::Unary(op, arg_expr) => {
                 let arg = arg_expr.eval_impl(stack).unwrap_number();
                 Value::Number(match op {
@@ -133,9 +145,9 @@ impl Expr {
             }
             Expr::Assign(lhs_expr, rhs_expr) => {
                 let lhs = lhs_expr.eval_impl(stack).unwrap_reference();
-                let rhs = rhs_expr.eval_impl(stack).unwrap_number();
-                stack.assign(&lhs, rhs);
-                Value::Number(rhs)
+                let rhs = rhs_expr.eval_impl(stack);
+                stack.assign(&lhs, rhs.clone());
+                rhs
             }
             Expr::Seq(first_expr, second_expr) => {
                 first_expr.eval_impl(stack);
@@ -143,7 +155,7 @@ impl Expr {
             }
             Expr::Let(_, _) => panic!("let is an intermediate node and should be absent"),
             Expr::Scope(var, val_expr, cont_expr) => {
-                let val = val_expr.eval_impl(stack).unwrap_number();
+                let val = val_expr.eval_impl(stack);
                 stack.push(var.clone(), val);
                 let res = cont_expr.eval_impl(stack);
                 stack.pop();
@@ -176,6 +188,10 @@ fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
             .map(|s: String| Expr::Constant(s.parse().unwrap()))
             .padded();
 
+        let mut x = 1;
+
+        *&mut x = 1;
+
         let block = stmt.clone().delimited_by(just("{"), just("}"));
 
         let if_expr_cons = |expr| {
@@ -199,7 +215,13 @@ fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
                 if_expr_cons(expr.clone()),
                 expr.clone().delimited_by(just('('), just(')')),
                 block.clone(),
-                var.map(|var| Expr::Variable(var)),
+                var.clone().map(|var| Expr::Variable(var)),
+                token("&")
+                    .then(var.clone())
+                    .map(|(_, var)| Expr::Reference(var)),
+                token("*")
+                    .then(expr.clone())
+                    .map(|(_, expr)| Expr::Dereference(Box::new(expr))),
                 num,
             ))
             .padded();
@@ -237,22 +259,14 @@ fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
                 Expr::Let(var, Box::new(rhs.map(|x| x.1).unwrap_or(Expr::Constant(0))))
             });
 
-        let assign = expr
+        let assign = var
             .clone()
+            .map(|var| Expr::Reference(var))
+            .or(token("*").then(expr.clone()).map(|x| x.1))
             .then(token("=").then(expr.clone()).map(|(_, e)| e))
-            .map(|(lhs, rhs)| {
-                Expr::Assign(
-                    Box::new(match lhs {
-                        Expr::Variable(var) => Expr::Reference(var),
-                        _ => lhs,
-                    }),
-                    Box::new(rhs),
-                )
-            });
+            .map(|(lhs, rhs)| Expr::Assign(Box::new(lhs), Box::new(rhs)));
 
         let atom = choice((let_expr, assign, expr.clone())).padded();
-
-        // S -> A? | A? ; S | B S
 
         block
             .clone()
