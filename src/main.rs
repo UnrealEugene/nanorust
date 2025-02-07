@@ -4,24 +4,47 @@ use chumsky::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
 pub enum UnaryOp {
-    Neg,
+    Negate,
+    Dereference,
 }
 
-impl Into<UnaryOp> for &str {
-    fn into(self) -> UnaryOp {
-        match self {
-            "-" => UnaryOp::Neg,
-            c => panic!("unknown unary operator {}", c),
-        }
+impl UnaryOp {
+    fn parse() -> impl Parser<char, UnaryOp, Error = Simple<char>> + Clone {
+        choice((
+            just("-").to(UnaryOp::Negate),
+            just("*").to(UnaryOp::Dereference),
+        ))
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum BinaryOp {
     Add,
-    Sub,
-    Mul,
-    Div,
+    Subtract,
+    Multiply,
+    Divide,
+}
+
+pub enum BinaryOpPriority {
+    Add,
+    Multiply,
+}
+
+impl BinaryOp {
+    fn parse(
+        priority: BinaryOpPriority,
+    ) -> impl Parser<char, BinaryOp, Error = Simple<char>> + Clone {
+        match priority {
+            BinaryOpPriority::Add => choice((
+                just("+").to(BinaryOp::Add),
+                just("-").to(BinaryOp::Subtract),
+            )),
+            BinaryOpPriority::Multiply => choice((
+                just("*").to(BinaryOp::Multiply),
+                just("/").to(BinaryOp::Divide),
+            )),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -34,7 +57,7 @@ pub enum ValueType {
 #[derive(Debug, Clone)]
 pub enum Value {
     Number(i32),
-    Reference(String),
+    Reference(usize),
     Void,
 }
 
@@ -46,9 +69,9 @@ impl Value {
         }
     }
 
-    fn unwrap_reference(self) -> String {
+    fn unwrap_reference(self) -> usize {
         match self {
-            Value::Reference(var) => var,
+            Value::Reference(i) => i,
             _ => panic!("unwrap of non-reference value {:?}", self),
         }
     }
@@ -61,9 +84,8 @@ pub enum Expr {
     Variable(String),                       // any
     Constant(i32),                          // Data
     Reference(String),                      // Reference
-    Dereference(Box<Expr>),                 // any
-    Unary(UnaryOp, Box<Expr>),              // Data
-    Binary(BinaryOp, Box<Expr>, Box<Expr>), // Data
+    Unary(UnaryOp, Box<Expr>),              // any
+    Binary(BinaryOp, Box<Expr>, Box<Expr>), // any
     Assign(Box<Expr>, Box<Expr>),           // Void
     Seq(Box<Expr>, Box<Expr>),              // any
     Let(String, Box<Expr>),                 // Void
@@ -79,7 +101,11 @@ impl Stack {
         Self::default()
     }
 
-    fn get<Q>(&self, k: &Q) -> Option<Value>
+    fn get(&self, index: usize) -> Option<&Value> {
+        self.0.get(index).map(|e| &e.1)
+    }
+
+    fn find<Q>(&self, k: &Q) -> Option<&Value>
     where
         String: Borrow<Q>,
         Q: Eq + ?Sized,
@@ -88,7 +114,19 @@ impl Stack {
             .iter()
             .rev()
             .find(|(var, _)| var.borrow() == k)
-            .map(|e| e.1.clone())
+            .map(|e| &e.1)
+    }
+
+    fn index<Q>(&self, k: &Q) -> Option<usize>
+    where
+        String: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
+        self.0.iter().position(|(var, _)| var.borrow() == k)
+    }
+
+    fn assign(&mut self, index: usize, v: Value) {
+        self.0.get_mut(index).map(|e| e.1 = v);
     }
 
     fn push(&mut self, k: String, v: Value) {
@@ -97,18 +135,6 @@ impl Stack {
 
     fn pop(&mut self) -> Option<(String, Value)> {
         self.0.pop()
-    }
-
-    fn assign<Q>(&mut self, k: &Q, v: Value)
-    where
-        String: Borrow<Q>,
-        Q: Eq + ?Sized,
-    {
-        self.0
-            .iter_mut()
-            .rev()
-            .find(|(var, _)| var.borrow() == k)
-            .map(|kv| kv.1 = v);
     }
 }
 
@@ -120,33 +146,36 @@ impl Expr {
                 expr.eval_impl(stack);
                 Value::Void
             }
-            Expr::Variable(var) => stack.get(var).unwrap_or(Value::Void),
+            Expr::Variable(var) => stack.find(var).cloned().unwrap_or(Value::Void),
             Expr::Constant(val) => Value::Number(val.clone()),
-            Expr::Reference(var) => Value::Reference(var.clone()),
-            Expr::Dereference(expr) => match expr.eval_impl(stack) {
-                Value::Reference(var) => stack.get(&var).unwrap_or(Value::Void),
-                _ => Value::Void,
-            },
+            Expr::Reference(var) => stack
+                .index(var)
+                .map(|i| Value::Reference(i))
+                .unwrap_or(Value::Void),
             Expr::Unary(op, arg_expr) => {
-                let arg = arg_expr.eval_impl(stack).unwrap_number();
-                Value::Number(match op {
-                    UnaryOp::Neg => arg.wrapping_neg(),
-                })
+                let arg = arg_expr.eval_impl(stack);
+                match op {
+                    UnaryOp::Negate => Value::Number(arg.unwrap_number().wrapping_neg()),
+                    UnaryOp::Dereference => match arg {
+                        Value::Reference(i) => stack.get(i).cloned().unwrap_or(Value::Void),
+                        _ => Value::Void,
+                    },
+                }
             }
             Expr::Binary(op, left_expr, right_expr) => {
                 let left = left_expr.eval_impl(stack).unwrap_number();
                 let right = right_expr.eval_impl(stack).unwrap_number();
                 Value::Number(match op {
                     BinaryOp::Add => left.wrapping_add(right),
-                    BinaryOp::Sub => left.wrapping_sub(right),
-                    BinaryOp::Mul => left.wrapping_mul(right),
-                    BinaryOp::Div => left.wrapping_div(right),
+                    BinaryOp::Subtract => left.wrapping_sub(right),
+                    BinaryOp::Multiply => left.wrapping_mul(right),
+                    BinaryOp::Divide => left.wrapping_div(right),
                 })
             }
             Expr::Assign(lhs_expr, rhs_expr) => {
                 let lhs = lhs_expr.eval_impl(stack).unwrap_reference();
                 let rhs = rhs_expr.eval_impl(stack);
-                stack.assign(&lhs, rhs.clone());
+                stack.assign(lhs, rhs.clone());
                 rhs
             }
             Expr::Seq(first_expr, second_expr) => {
@@ -192,7 +221,7 @@ fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
 
         *&mut x = 1;
 
-        let block = stmt.clone().delimited_by(just("{"), just("}"));
+        let block = stmt.clone().delimited_by(just("{"), just("}")).padded();
 
         let if_expr_cons = |expr| {
             recursive(|if_stmt| {
@@ -216,25 +245,22 @@ fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
                 expr.clone().delimited_by(just('('), just(')')),
                 block.clone(),
                 var.clone().map(|var| Expr::Variable(var)),
-                token("&")
-                    .then(var.clone())
-                    .map(|(_, var)| Expr::Reference(var)),
-                token("*")
-                    .then(expr.clone())
-                    .map(|(_, expr)| Expr::Dereference(Box::new(expr))),
+                token("&").then(var).map(|(_, var)| Expr::Reference(var)),
                 num,
             ))
             .padded();
 
-            let unary = token("-")
+            let unary = UnaryOp::parse()
+                .padded()
                 .repeated()
                 .then(atom)
-                .foldr(|op, x| Expr::Unary(op.into(), Box::new(x)));
+                .foldr(|op, x| Expr::Unary(op, Box::new(x)));
 
             let product = unary
                 .clone()
                 .then(
-                    choice((token("*").to(BinaryOp::Mul), token("/").to(BinaryOp::Div)))
+                    BinaryOp::parse(BinaryOpPriority::Multiply)
+                        .padded()
                         .then(unary)
                         .repeated(),
                 )
@@ -243,7 +269,7 @@ fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
             let sum = product
                 .clone()
                 .then(
-                    choice((token("+").to(BinaryOp::Add), token("-").to(BinaryOp::Sub)))
+                    BinaryOp::parse(BinaryOpPriority::Add)
                         .then(product)
                         .repeated(),
                 )
@@ -272,7 +298,10 @@ fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
             .clone()
             .or(if_expr_cons(expr.clone()))
             .then(stmt.clone())
-            .map(|(a, b)| Expr::Seq(Box::new(a), Box::new(b)))
+            .map(|(first_expr, second_expr)| match second_expr {
+                Expr::Skip => first_expr,
+                _ => Expr::Seq(Box::new(first_expr), Box::new(second_expr)),
+            })
             .or(atom
                 .clone()
                 .or_not()
