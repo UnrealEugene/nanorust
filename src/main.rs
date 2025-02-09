@@ -47,13 +47,6 @@ impl BinaryOp {
     }
 }
 
-#[derive(Debug)]
-pub enum ValueType {
-    Data,
-    Reference,
-    Void,
-}
-
 #[derive(Debug, Clone)]
 pub enum Value {
     Number(i32),
@@ -81,11 +74,11 @@ impl Value {
 pub enum Expr {
     Skip,                                   // Void
     Ignore(Box<Expr>),                      // Void
-    Variable(String),                       // any
-    Constant(i32),                          // Data
-    Reference(String),                      // Reference
-    Unary(UnaryOp, Box<Expr>),              // any
-    Binary(BinaryOp, Box<Expr>, Box<Expr>), // any
+    Variable(String),                       // Value
+    Constant(i32),                          // Value
+    Reference(String),                      // Value
+    Unary(UnaryOp, Box<Expr>),              // Value
+    Binary(BinaryOp, Box<Expr>, Box<Expr>), // Value
     Assign(Box<Expr>, Box<Expr>),           // Void
     Seq(Box<Expr>, Box<Expr>),              // any
     Let(String, Box<Expr>),                 // Void
@@ -139,6 +132,41 @@ impl Stack {
 }
 
 impl Expr {
+    fn new_seq(first_expr: Expr, second_expr: Expr) -> Expr {
+        match (first_expr, second_expr) {
+            (Expr::Let(var, val_expr), inner_expr) => {
+                Expr::Scope(var, val_expr, Box::new(inner_expr))
+            }
+            (Expr::Skip, second_expr) => second_expr,
+            (first_expr, second_expr) => Expr::Seq(
+                if first_expr.is_value() {
+                    Box::new(Expr::Ignore(Box::new(first_expr)))
+                } else {
+                    Box::new(first_expr)
+                },
+                Box::new(second_expr),
+            ),
+        }
+    }
+
+    fn is_value(&self) -> bool {
+        // TODO: maybe optimize
+        match self {
+            Expr::Skip => false,
+            Expr::Ignore(_) => false,
+            Expr::Variable(_) => true,
+            Expr::Constant(_) => true,
+            Expr::Reference(_) => true,
+            Expr::Unary(_, _) => true,
+            Expr::Binary(_, _, _) => true,
+            Expr::Assign(_, _) => false,
+            Expr::Seq(_, second_expr) => second_expr.is_value(),
+            Expr::Let(_, _) => false,
+            Expr::Scope(_, _, cont_expr) => cont_expr.is_value(),
+            Expr::If(_, _, false_expr) => false_expr.is_value(),
+        }
+    }
+
     fn eval_impl(&self, stack: &mut Stack) -> Value {
         match self {
             Expr::Skip => Value::Void,
@@ -182,7 +210,7 @@ impl Expr {
                 first_expr.eval_impl(stack);
                 second_expr.eval_impl(stack)
             }
-            Expr::Let(_, _) => panic!("let is an intermediate node and should be absent"),
+            Expr::Let(_, _) => panic!("Let is an intermediate node and should not be present in final AST"),
             Expr::Scope(var, val_expr, cont_expr) => {
                 let val = val_expr.eval_impl(stack);
                 stack.push(var.clone(), val);
@@ -217,11 +245,11 @@ fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
             .map(|s: String| Expr::Constant(s.parse().unwrap()))
             .padded();
 
-        let mut x = 1;
-
-        *&mut x = 1;
-
-        let block = stmt.clone().delimited_by(just("{"), just("}")).padded();
+        let block = stmt
+            .clone()
+            .delimited_by(just("{"), just("}"))
+            .map(|opt: Option<Expr>| opt.unwrap_or(Expr::Skip))
+            .padded();
 
         let if_expr_cons = |expr| {
             recursive(|if_stmt| {
@@ -298,29 +326,26 @@ fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
             .clone()
             .or(if_expr_cons(expr.clone()))
             .then(stmt.clone())
-            .map(|(first_expr, second_expr)| match second_expr {
-                Expr::Skip => first_expr,
-                _ => Expr::Seq(Box::new(first_expr), Box::new(second_expr)),
+            .map(|(first_expr, second_opt)| {
+                Some(match second_opt {
+                    Some(second_expr) => Expr::new_seq(first_expr, second_expr),
+                    None => first_expr,
+                })
             })
             .or(atom
                 .clone()
                 .or_not()
                 .then(token(";").then(stmt.clone()).or_not())
-                .map(|(first_opt, second_opt)| {
-                    let first_expr = first_opt.unwrap_or(Expr::Skip);
-                    let second_expr = second_opt.map(|x| x.1).unwrap_or(Expr::Skip);
-                    match (first_expr, second_expr) {
-                        (Expr::Let(var, val_expr), inner_expr) => {
-                            Expr::Scope(var, val_expr, Box::new(inner_expr))
-                        }
-                        (Expr::Skip, second_expr) => second_expr,
-                        (first_expr, Expr::Skip) => first_expr,
-                        (first_expr, second_expr) => {
-                            Expr::Seq(Box::new(first_expr), Box::new(second_expr))
-                        }
-                    }
+                .map(|(first_opt, second_opt)| match second_opt {
+                    Some((_, second_opt)) => Some(Expr::new_seq(
+                        first_opt.unwrap_or(Expr::Skip),
+                        second_opt.unwrap_or(Expr::Skip),
+                    )),
+                    None => first_opt,
                 }))
+            .padded()
     })
+    .map(|opt: Option<Expr>| opt.unwrap_or(Expr::Skip))
     .then_ignore(end())
 }
 
