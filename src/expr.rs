@@ -1,4 +1,6 @@
-use std::{borrow::Borrow, iter::zip};
+use core::{borrow::Borrow, iter::zip};
+
+use alloc::{boxed::Box, string::String, vec::Vec};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
@@ -81,7 +83,7 @@ impl<'a> Stack<'a> {
         index = self.0.len() - index - 1;
         self.0.get(index).map(|e| &e.1)
     }
-    
+
     fn index<Q>(&self, k: &Q) -> Option<usize>
     where
         String: Borrow<Q>,
@@ -213,8 +215,7 @@ impl Expr {
                     panic!("call on non-function value {:?}", callee_expr);
                 };
 
-                let arg_vals: Vec<_> =
-                    arg_exprs.iter().map(|expr| expr.eval_impl(stack)).collect();
+                let arg_vals: Vec<_> = arg_exprs.iter().map(|expr| expr.eval_impl(stack)).collect();
                 zip(arg_names.iter(), arg_vals.iter())
                     .for_each(|(name, val)| stack.unshift(name.clone(), val.clone()));
                 let res = body_expr.eval_impl(stack);

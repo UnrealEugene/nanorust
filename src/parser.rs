@@ -1,5 +1,6 @@
-use chumsky::prelude::*;
 use crate::expr::*;
+use alloc::{boxed::Box, string::String, vec};
+use chumsky::prelude::*;
 
 impl UnaryOp {
     fn parse() -> impl Parser<char, UnaryOp, Error = Simple<char>> + Clone {
