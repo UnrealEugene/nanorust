@@ -15,17 +15,65 @@ pub enum BinaryOp {
     Subtract,
     Multiply,
     Divide,
+    Equal,
+    NotEqual,
+    LessEqual,
+    GreaterEqual,
+    Less,
+    Greater,
 }
 
-pub enum BinaryOpPriority {
-    Add,
-    Multiply,
+impl BinaryOp {
+    fn calc_num_to_num<'a, F: Fn(i32, i32) -> i32>(a: Value<'a>, b: Value<'a>, f: F) -> Value<'a> {
+        Value::Number(f(a.unwrap_number(), b.unwrap_number()))
+    }
+
+    fn calc_num_to_bool<'a, F: Fn(&i32, &i32) -> bool>(
+        a: Value<'a>,
+        b: Value<'a>,
+        f: F,
+    ) -> Value<'a> {
+        Value::Boolean(f(&a.unwrap_number(), &b.unwrap_number()))
+    }
+
+    pub fn calc<'a>(&self, a: Value<'a>, b: Value<'a>) -> Value<'a> {
+        match self {
+            Self::Add => Self::calc_num_to_num(a, b, i32::wrapping_add),
+            Self::Subtract => Self::calc_num_to_num(a, b, i32::wrapping_sub),
+            Self::Multiply => Self::calc_num_to_num(a, b, i32::wrapping_mul),
+            Self::Divide => Self::calc_num_to_num(a, b, i32::wrapping_div),
+            Self::Equal => Self::calc_num_to_bool(a, b, i32::eq),
+            Self::NotEqual => Self::calc_num_to_bool(a, b, i32::ne),
+            Self::LessEqual => Self::calc_num_to_bool(a, b, i32::le),
+            Self::GreaterEqual => Self::calc_num_to_bool(a, b, i32::ge),
+            Self::Less => Self::calc_num_to_bool(a, b, i32::lt),
+            Self::Greater => Self::calc_num_to_bool(a, b, i32::gt),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Pointer {
+    Relative(usize),
+    Absolute(usize),
+    Invalid,
+}
+
+impl Pointer {
+    fn to_absolute<'a>(self, stack: &Stack<'a>) -> Option<usize> {
+        match self {
+            Pointer::Relative(i) => Some(stack.0.len() - i - 1),
+            Pointer::Absolute(i) => Some(i),
+            Pointer::Invalid => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum Value<'a> {
     Number(i32),
-    Pointer(usize),
+    Boolean(bool),
+    Pointer(Pointer),
     Function(&'a Expr),
     Void,
 }
@@ -38,9 +86,16 @@ impl<'a> Value<'a> {
         }
     }
 
-    fn unwrap_pointer(self) -> usize {
+    fn unwrap_boolean(self) -> bool {
         match self {
-            Value::Pointer(i) => i,
+            Value::Boolean(val) => val,
+            _ => panic!("unwrap of non-boolean value {:?}", self),
+        }
+    }
+
+    fn unwrap_pointer(self) -> Pointer {
+        match self {
+            Value::Pointer(ptr) => ptr,
             _ => panic!("unwrap of non-pointer value {:?}", self),
         }
     }
@@ -57,7 +112,7 @@ impl<'a> Value<'a> {
 pub enum Expr {
     Skip,                                   // Void
     Ignore(Box<Expr>),                      // Void
-    Location(usize, String),                // Value
+    Location(Pointer, String),              // Value
     Constant(i32),                          // Value
     Unary(UnaryOp, Box<Expr>),              // Value
     Binary(BinaryOp, Box<Expr>, Box<Expr>), // Value
@@ -79,9 +134,9 @@ impl<'a> Stack<'a> {
     }
 
     // inverse indexation
-    fn get(&self, mut index: usize) -> Option<&Value<'a>> {
-        index = self.0.len() - index - 1;
-        self.0.get(index).map(|e| &e.1)
+    fn get(&self, ptr: Pointer) -> Option<&Value<'a>> {
+        let index_opt = ptr.to_absolute(&self);
+        index_opt.and_then(|i| self.0.get(i)).map(|e| &e.1)
     }
 
     fn index<Q>(&self, k: &Q) -> Option<usize>
@@ -92,9 +147,9 @@ impl<'a> Stack<'a> {
         self.0.iter().rev().position(|(var, _)| var.borrow() == k)
     }
 
-    fn assign(&mut self, mut index: usize, v: Value<'a>) {
-        index = self.0.len() - index - 1;
-        self.0.get_mut(index).map(|e| e.1 = v);
+    fn assign(&mut self, ptr: Pointer, v: Value<'a>) {
+        let index_opt = ptr.to_absolute(&self);
+        index_opt.and_then(|i| self.0.get_mut(i)).map(|e| e.1 = v);
     }
 
     fn unshift(&mut self, k: String, v: Value<'a>) {
@@ -150,12 +205,15 @@ impl Expr {
                 expr.eval_impl(stack);
                 Value::Void
             }
-            Expr::Location(i, _) => stack.get(*i).cloned().unwrap_or(Value::Void),
+            Expr::Location(ptr, _) => stack.get(*ptr).cloned().unwrap_or(Value::Void),
             Expr::Constant(val) => Value::Number(val.clone()),
             Expr::Unary(op, arg_expr) => {
                 if *op == UnaryOp::Reference {
-                    if let Expr::Location(i, _) = arg_expr.as_ref() {
-                        return Value::Pointer(*i);
+                    if let Expr::Location(ptr, _) = arg_expr.as_ref() {
+                        return ptr
+                            .to_absolute(stack)
+                            .map(|i| Value::Pointer(Pointer::Absolute(i)))
+                            .unwrap_or(Value::Void);
                     }
                     panic!("getting address of arbitrary expression is not supported")
                 }
@@ -170,14 +228,9 @@ impl Expr {
                 }
             }
             Expr::Binary(op, left_expr, right_expr) => {
-                let left = left_expr.eval_impl(stack).unwrap_number();
-                let right = right_expr.eval_impl(stack).unwrap_number();
-                Value::Number(match op {
-                    BinaryOp::Add => left.wrapping_add(right),
-                    BinaryOp::Subtract => left.wrapping_sub(right),
-                    BinaryOp::Multiply => left.wrapping_mul(right),
-                    BinaryOp::Divide => left.wrapping_div(right),
-                })
+                let left = left_expr.eval_impl(stack);
+                let right = right_expr.eval_impl(stack);
+                op.calc(left, right)
             }
             Expr::Assign(lhs_expr, rhs_expr) => {
                 let lhs = lhs_expr.eval_impl(stack).unwrap_pointer();
@@ -200,8 +253,8 @@ impl Expr {
                 res
             }
             Expr::If(cond_expr, true_expr, false_expr) => {
-                let cond = cond_expr.eval_impl(stack).unwrap_number();
-                if cond != 0 {
+                let cond = cond_expr.eval_impl(stack).unwrap_boolean();
+                if cond {
                     true_expr.eval_impl(stack)
                 } else {
                     false_expr.eval_impl(stack)
@@ -236,10 +289,12 @@ impl Expr {
         match self {
             Expr::Skip => {}
             Expr::Ignore(expr) => expr.set_up_impl(stack),
-            Expr::Location(i, var) => {
-                *i = stack
-                    .index(var)
-                    .unwrap_or_else(|| panic!("undefined variable {}", var));
+            Expr::Location(ptr, var) => {
+                *ptr = Pointer::Relative(
+                    stack
+                        .index(var)
+                        .unwrap_or_else(|| panic!("undefined variable {}", var)),
+                );
             }
             Expr::Constant(_) => {}
             Expr::Unary(_, arg_expr) => arg_expr.set_up_impl(stack),

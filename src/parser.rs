@@ -6,26 +6,36 @@ impl UnaryOp {
     fn parse() -> impl Parser<char, UnaryOp, Error = Simple<char>> + Clone {
         choice((
             just("-").to(UnaryOp::Negate),
-            just("&").to(UnaryOp::Dereference),
+            just("&").to(UnaryOp::Reference),
             just("*").to(UnaryOp::Dereference),
         ))
     }
 }
 
 impl BinaryOp {
-    fn parse(
-        priority: BinaryOpPriority,
-    ) -> impl Parser<char, BinaryOp, Error = Simple<char>> + Clone {
-        match priority {
-            BinaryOpPriority::Add => choice((
-                just("+").to(BinaryOp::Add),
-                just("-").to(BinaryOp::Subtract),
-            )),
-            BinaryOpPriority::Multiply => choice((
-                just("*").to(BinaryOp::Multiply),
-                just("/").to(BinaryOp::Divide),
-            )),
-        }
+    fn parse_sum() -> impl Parser<char, BinaryOp, Error = Simple<char>> + Clone {
+        choice((
+            just("+").to(BinaryOp::Add),
+            just("-").to(BinaryOp::Subtract),
+        ))
+    }
+
+    fn parse_product() -> impl Parser<char, BinaryOp, Error = Simple<char>> + Clone {
+        choice((
+            just("*").to(BinaryOp::Multiply),
+            just("/").to(BinaryOp::Divide),
+        ))
+    }
+
+    fn parse_compare() -> impl Parser<char, BinaryOp, Error = Simple<char>> + Clone {
+        choice((
+            just("==").to(BinaryOp::Equal),
+            just("!=").to(BinaryOp::NotEqual),
+            just("<=").to(BinaryOp::LessEqual),
+            just(">=").to(BinaryOp::GreaterEqual),
+            just("<").to(BinaryOp::Less),
+            just(">").to(BinaryOp::Greater),
+        ))
     }
 }
 
@@ -86,7 +96,7 @@ pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
 
             let atom = choice((
                 expr.clone().delimited_by(just('('), just(')')),
-                var.clone().map(|var| Expr::Location(0, var)),
+                var.clone().map(|var| Expr::Location(Pointer::Invalid, var)),
                 num,
             ))
             .padded();
@@ -124,7 +134,7 @@ pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
             let product = unary
                 .clone()
                 .then(
-                    BinaryOp::parse(BinaryOpPriority::Multiply)
+                    BinaryOp::parse_product()
                         .padded()
                         .then(unary)
                         .repeated(),
@@ -134,8 +144,17 @@ pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
             let sum = product
                 .clone()
                 .then(
-                    BinaryOp::parse(BinaryOpPriority::Add)
+                    BinaryOp::parse_sum()
                         .then(product)
+                        .repeated(),
+                )
+                .foldl(|lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)));
+
+            let compare = sum
+                .clone()
+                .then(
+                    BinaryOp::parse_compare()
+                        .then(sum)
                         .repeated(),
                 )
                 .foldl(|lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)));
@@ -144,7 +163,7 @@ pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
                 if_expr_cons(expr.clone()),
                 lambda.clone(),
                 block.clone(),
-                sum.clone(),
+                compare.clone(),
             ))
             .padded()
         });
@@ -158,7 +177,12 @@ pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
 
         let assign = var
             .clone()
-            .map(|var| Expr::Unary(UnaryOp::Reference, Box::new(Expr::Location(0, var))))
+            .map(|var| {
+                Expr::Unary(
+                    UnaryOp::Reference,
+                    Box::new(Expr::Location(Pointer::Invalid, var)),
+                )
+            })
             .or(token("*").then(expr.clone()).map(|x| x.1))
             .then(token("=").then(expr.clone()).map(|(_, e)| e))
             .map(|(lhs, rhs)| Expr::Assign(Box::new(lhs), Box::new(rhs)));

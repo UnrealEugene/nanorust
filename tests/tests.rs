@@ -8,7 +8,7 @@ fn test_file() {
     match stmt().parse(src) {
         Ok(mut ast) => {
             ast.set_up();
-            println!("{:?}", ast);
+            println!("{:#?}", ast);
             println!("{:?}", ast.eval())
         }
         Err(parse_errs) => parse_errs
