@@ -6,6 +6,7 @@ impl UnaryOp {
     fn parse() -> impl Parser<char, UnaryOp, Error = Simple<char>> + Clone {
         choice((
             just("-").to(UnaryOp::Negate),
+            just("!").to(UnaryOp::LogicNot),
             just("&").to(UnaryOp::Reference),
             just("*").to(UnaryOp::Dereference),
         ))
@@ -36,6 +37,14 @@ impl BinaryOp {
             just("<").to(BinaryOp::Less),
             just(">").to(BinaryOp::Greater),
         ))
+    }
+
+    fn parse_logic_and() -> impl Parser<char, BinaryOp, Error = Simple<char>> + Clone {
+        just("&&").to(BinaryOp::LogicAnd)
+    }
+
+    fn parse_logic_or() -> impl Parser<char, BinaryOp, Error = Simple<char>> + Clone {
+        just("||").to(BinaryOp::LogicOr)
     }
 }
 
@@ -94,6 +103,10 @@ pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
                 })
                 .padded();
 
+            let return_expr = token("return")
+                .then(expr.clone())
+                .map(|(_, val)| Expr::Return(Box::new(val)));
+
             let atom = choice((
                 expr.clone().delimited_by(just('('), just(')')),
                 var.clone().map(|var| Expr::Location(Pointer::Invalid, var)),
@@ -133,37 +146,38 @@ pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
 
             let product = unary
                 .clone()
-                .then(
-                    BinaryOp::parse_product()
-                        .padded()
-                        .then(unary)
-                        .repeated(),
-                )
+                .then(BinaryOp::parse_product().padded().then(unary).repeated())
                 .foldl(|lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)));
 
             let sum = product
                 .clone()
-                .then(
-                    BinaryOp::parse_sum()
-                        .then(product)
-                        .repeated(),
-                )
+                .then(BinaryOp::parse_sum().then(product).repeated())
                 .foldl(|lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)));
 
             let compare = sum
                 .clone()
-                .then(
-                    BinaryOp::parse_compare()
-                        .then(sum)
-                        .repeated(),
-                )
+                .then(BinaryOp::parse_compare().then(sum).or_not())
+                .map(|(lhs, rhs_opt)| match rhs_opt {
+                    Some((op, rhs)) => Expr::Binary(op, Box::new(lhs), Box::new(rhs)),
+                    None => lhs,
+                });
+
+            let logic_and = compare
+                .clone()
+                .then(BinaryOp::parse_logic_and().then(compare).repeated())
+                .foldl(|lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)));
+
+            let logic_or = logic_and
+                .clone()
+                .then(BinaryOp::parse_logic_or().then(logic_and).repeated())
                 .foldl(|lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)));
 
             choice((
                 if_expr_cons(expr.clone()),
+                return_expr,
                 lambda.clone(),
                 block.clone(),
-                compare.clone(),
+                logic_or.clone(),
             ))
             .padded()
         });
