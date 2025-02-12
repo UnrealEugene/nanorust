@@ -48,14 +48,14 @@ impl BinaryOp {
     }
 }
 
-pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
+pub fn stmt<'a>() -> impl Parser<char, Expr<'a>, Error = Simple<char>> {
     recursive(|stmt| {
         let token = |c| just(c).padded();
 
         let var = text::ident().padded();
 
         let num = text::int(10)
-            .map(|s: String| Expr::Constant(s.parse().unwrap()))
+            .map(|s: String| Expr::Constant(Value::Number(s.parse().unwrap())))
             .padded();
 
         let block = stmt
@@ -109,6 +109,8 @@ pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
 
             let atom = choice((
                 expr.clone().delimited_by(just('('), just(')')),
+                token("true").map(|_| Expr::Constant(Value::Boolean(true))),
+                token("false").map(|_| Expr::Constant(Value::Boolean(false))),
                 var.clone().map(|var| Expr::Location(Pointer::Invalid, var)),
                 num,
             ))
@@ -175,6 +177,7 @@ pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
             choice((
                 if_expr_cons(expr.clone()),
                 return_expr,
+                token("break").map(|_| Expr::Break),
                 lambda.clone(),
                 block.clone(),
                 logic_or.clone(),
@@ -186,7 +189,7 @@ pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
             .then(var)
             .then(token("=").then(expr.clone()).or_not())
             .map(|((_, var), rhs)| {
-                Expr::Let(var, Box::new(rhs.map(|x| x.1).unwrap_or(Expr::Constant(0))))
+                Expr::Let(var, Box::new(rhs.map(|x| x.1).unwrap_or(Expr::Skip)))
             });
 
         let assign = var
@@ -201,11 +204,16 @@ pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
             .then(token("=").then(expr.clone()).map(|(_, e)| e))
             .map(|(lhs, rhs)| Expr::Assign(Box::new(lhs), Box::new(rhs)));
 
+        let while_stmt = token("while").then(expr.clone()).then(block.clone()).map(
+            |((_, cond_expr), inner_expr)| Expr::While(Box::new(cond_expr), Box::new(inner_expr)),
+        );
+
         let atom = choice((let_expr, assign, expr.clone())).padded();
 
         block
             .clone()
             .or(if_expr_cons(expr.clone()))
+            .or(while_stmt.clone())
             .then(stmt.clone())
             .map(|(first_expr, second_opt)| {
                 Some(match second_opt {

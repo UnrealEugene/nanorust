@@ -87,7 +87,7 @@ pub enum Value<'a> {
     Number(i32),
     Boolean(bool),
     Pointer(Pointer),
-    Function(&'a Expr),
+    Function(&'a Expr<'a>),
     Void,
 }
 
@@ -113,7 +113,7 @@ impl<'a> Value<'a> {
         }
     }
 
-    fn unwrap_function(self) -> &'a Expr {
+    fn unwrap_function(self) -> &'a Expr<'a> {
         match self {
             Value::Function(expr) => expr,
             _ => panic!("unwrap of non-function value {:?}", self),
@@ -128,14 +128,15 @@ impl<'a> Value<'a> {
 enum Flow<'a, R = Value<'a>> {
     Normal(R),
     Return(Value<'a>),
+    Break,
 }
 
 impl<'a, T> Flow<'a, T> {
     fn chain<R, F: FnOnce() -> Flow<'a, R>>(self, f: F) -> Flow<'a, (T, R)> {
-        // self.and_then(|first| f().map(|second| (first, second)))
         self.and_then(|first| match f() {
             Flow::Normal(second) => Flow::Normal((first, second)),
             Flow::Return(val) => Flow::Return(val),
+            Flow::Break => Flow::Break,
         })
     }
 
@@ -144,8 +145,10 @@ impl<'a, T> Flow<'a, T> {
             Flow::Normal(val) => match f(val) {
                 Flow::Normal(second) => Flow::Normal(second),
                 Flow::Return(val) => Flow::Return(val),
+                Flow::Break => Flow::Break,
             },
             Flow::Return(val) => Flow::Return(val),
+            Flow::Break => Flow::Break,
         }
     }
 
@@ -153,6 +156,7 @@ impl<'a, T> Flow<'a, T> {
         match self {
             Flow::Normal(val) => Flow::Normal(f(val)),
             Flow::Return(val) => Flow::Return(val),
+            Flow::Break => Flow::Break,
         }
     }
 }
@@ -162,26 +166,29 @@ impl<'a> Flow<'a> {
         match self {
             Flow::Normal(val) => val,
             Flow::Return(val) => val,
+            Flow::Break => Value::Void,
         }
     }
 }
 
 #[derive(Debug)]
-pub enum Expr {
+pub enum Expr<'a> {
     Skip,                                   // Void
-    Ignore(Box<Expr>),                      // Void
+    Ignore(Box<Self>),                      // Void
     Location(Pointer, String),              // Value
-    Constant(i32),                          // Value
-    Unary(UnaryOp, Box<Expr>),              // Value
-    Binary(BinaryOp, Box<Expr>, Box<Expr>), // Value
-    Assign(Box<Expr>, Box<Expr>),           // Void
-    Seq(Box<Expr>, Box<Expr>),              // any
-    Let(String, Box<Expr>),                 // Void
-    Scope(String, Box<Expr>, Box<Expr>),    // any
-    If(Box<Expr>, Box<Expr>, Box<Expr>),    // any
-    Function(Vec<String>, Box<Expr>),       // Value
-    Call(Box<Expr>, Vec<Expr>),             // Value
-    Return(Box<Expr>),                      // Void
+    Constant(Value<'a>),                    // Value
+    Unary(UnaryOp, Box<Self>),              // Value
+    Binary(BinaryOp, Box<Self>, Box<Self>), // Value
+    Assign(Box<Self>, Box<Self>),           // Void
+    Seq(Box<Self>, Box<Self>),              // any
+    Let(String, Box<Self>),                 // Void
+    Scope(String, Box<Self>, Box<Self>),    // any
+    If(Box<Self>, Box<Self>, Box<Self>),    // any
+    Function(Vec<String>, Box<Self>),       // Value
+    Call(Box<Self>, Vec<Self>),             // Value
+    Return(Box<Self>),                      // Void
+    While(Box<Self>, Box<Self>),            // Void
+    Break,                                  // Void
 }
 
 #[derive(Default)]
@@ -219,8 +226,8 @@ impl<'a> Stack<'a> {
     }
 }
 
-impl Expr {
-    pub fn new_seq(first_expr: Expr, second_expr: Expr) -> Expr {
+impl<'a> Expr<'a> {
+    pub fn new_seq(first_expr: Self, second_expr: Self) -> Self {
         match (first_expr, second_expr) {
             (Expr::Let(var, val_expr), inner_expr) => {
                 Expr::Scope(var, val_expr, Box::new(inner_expr))
@@ -254,15 +261,17 @@ impl Expr {
             Expr::Function(_, _) => true,
             Expr::Call(_, _) => true,
             Expr::Return(_) => false,
+            Expr::While(_, _) => false,
+            Expr::Break => false,
         }
     }
 
-    fn eval_impl<'a>(&'a self, stack: &mut Stack<'a>) -> Flow<'a> {
+    fn eval_impl(&'a self, stack: &mut Stack<'a>) -> Flow<'a> {
         match self {
             Expr::Skip => Flow::Normal(Value::Void),
             Expr::Ignore(expr) => expr.eval_impl(stack).map(|_| Value::Void),
             Expr::Location(ptr, _) => stack.get(*ptr).cloned().unwrap_or(Value::Void).to_flow(),
-            Expr::Constant(val) => Value::Number(val.clone()).to_flow(),
+            Expr::Constant(val) => val.clone().to_flow(),
             Expr::Unary(op, arg_expr) => {
                 if *op == UnaryOp::Reference {
                     if let Expr::Location(ptr, _) = arg_expr.as_ref() {
@@ -347,6 +356,24 @@ impl Expr {
                         })
                 }),
             Expr::Return(expr) => expr.eval_impl(stack).and_then(|val| Flow::Return(val)),
+            Expr::While(cond_expr, inner_expr) => loop {
+                let flow = cond_expr
+                    .eval_impl(stack)
+                    .and_then(|cond| {
+                        if cond.unwrap_boolean() {
+                            Flow::Normal(())
+                        } else {
+                            Flow::Break
+                        }
+                    })
+                    .and_then(|_| inner_expr.eval_impl(stack));
+                match flow {
+                    Flow::Normal(_) => {}
+                    Flow::Return(_) => break flow,
+                    Flow::Break => break Value::Void.to_flow(),
+                }
+            },
+            Expr::Break => Flow::Break,
         }
     }
 
@@ -408,6 +435,11 @@ impl Expr {
                     .for_each(|arg_expr| arg_expr.set_up_impl(stack));
             }
             Expr::Return(expr) => expr.set_up_impl(stack),
+            Expr::While(cond_expr, inner_expr) => {
+                cond_expr.set_up_impl(stack);
+                inner_expr.set_up_impl(stack);
+            }
+            Expr::Break => {}
         }
     }
 
