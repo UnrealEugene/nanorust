@@ -6,10 +6,10 @@ fn test_file() {
     let src = std::fs::read_to_string("E:\\Projects\\Rust\\hex-coding\\test.txt").unwrap();
 
     match stmt().parse(src) {
-        Ok(mut ast) => {
-            ast.set_up();
+        Ok(ast) => {
+            let env = ast.set_up();
             println!("{:#?}", ast);
-            println!("{:?}", ast.eval())
+            println!("{:?}", ast.eval(env))
         }
         Err(parse_errs) => parse_errs
             .into_iter()
