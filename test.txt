@@ -1,16 +1,6 @@
-fn is_prime(x) {
-    fn id(x) {
-        x
-    }
-
-    let i = 2;
-    while i * i <= x {
-        if x % i == 0 {
-            return false;
-        }
-        i = i + 1
-    }
-    id(true)
+let f = |a, b| a..=b;
+let x = 0;
+for i in f(1, 10) {
+    x = x + i;
 }
-
-is_prime(998244353)
+x

@@ -1,4 +1,10 @@
-use core::{borrow::Borrow, cell::Cell, iter::zip, mem, ops::Deref};
+use core::{
+    borrow::Borrow,
+    cell::Cell,
+    iter::zip,
+    mem,
+    ops::{Deref, Range, RangeInclusive},
+};
 
 use alloc::{boxed::Box, rc::Rc, string::String, vec::Vec};
 
@@ -25,18 +31,29 @@ pub enum BinaryOp {
     Greater,
     LogicOr,
     LogicAnd,
+    Range,
+    RangeInclusive,
 }
 
 impl BinaryOp {
-    fn calc_num_to_num<F: Fn(i32, i32) -> i32>(a: Value, b: Value, f: F) -> Value {
+    fn calc_num_to_num<F: FnOnce(i32, i32) -> i32>(a: Value, b: Value, f: F) -> Value {
         Value::Number(f(a.unwrap_number(), b.unwrap_number()))
     }
 
-    fn calc_num_to_bool<F: Fn(&i32, &i32) -> bool>(a: Value, b: Value, f: F) -> Value {
+    fn calc_num_to_bool<F: FnOnce(&i32, &i32) -> bool>(a: Value, b: Value, f: F) -> Value {
         Value::Boolean(f(&a.unwrap_number(), &b.unwrap_number()))
     }
 
-    fn calc_bool_to_bool<F: Fn(bool, bool) -> bool>(a: Value, b: Value, f: F) -> Value {
+    fn calc_num_to_any<T, F: FnOnce(i32, i32) -> T, G: Fn(T) -> Value>(
+        a: Value,
+        b: Value,
+        f: F,
+        cons: G,
+    ) -> Value {
+        cons(f(a.unwrap_number(), b.unwrap_number()))
+    }
+
+    fn calc_bool_to_bool<F: FnOnce(bool, bool) -> bool>(a: Value, b: Value, f: F) -> Value {
         Value::Boolean(f(a.unwrap_boolean(), b.unwrap_boolean()))
     }
 
@@ -55,6 +72,10 @@ impl BinaryOp {
             Self::Greater => Self::calc_num_to_bool(a, b, i32::gt),
             Self::LogicOr => Self::calc_bool_to_bool(a, b, |a, b| a || b),
             Self::LogicAnd => Self::calc_bool_to_bool(a, b, |a, b| a && b),
+            Self::Range => Self::calc_num_to_any(a, b, |a, b| a..b, Value::Range),
+            Self::RangeInclusive => {
+                Self::calc_num_to_any(a, b, |a, b| a..=b, Value::RangeInclusive)
+            }
         }
     }
 }
@@ -82,10 +103,18 @@ impl Pointer {
 pub enum Value {
     Number(i32),
     Boolean(bool),
+    Range(Range<i32>),
+    RangeInclusive(RangeInclusive<i32>),
     Pointer(Pointer),
     Function(usize),
     Closure(Rc<Function>),
     Void,
+}
+
+impl Default for Value {
+    fn default() -> Self {
+        Value::Void
+    }
 }
 
 impl Value {
@@ -100,6 +129,14 @@ impl Value {
         match self {
             Value::Boolean(val) => val,
             _ => panic!("unwrap of non-boolean value {:?}", self),
+        }
+    }
+
+    fn unwrap_range(self) -> Box<dyn Iterator<Item = i32>> {
+        match self {
+            Value::Range(range) => Box::new(range),
+            Value::RangeInclusive(range) => Box::new(range),
+            _ => panic!("unwrap of non-range value {:?}", self),
         }
     }
 
@@ -128,6 +165,12 @@ enum Flow<R = Value> {
     Return(Value),
     Continue,
     Break,
+}
+
+impl<T: Default> Default for Flow<T> {
+    fn default() -> Self {
+        Flow::Normal(T::default())
+    }
 }
 
 impl<T> Flow<T> {
@@ -197,6 +240,7 @@ pub enum Expr {
     Call(Box<Self>, Vec<Self>),                // Value
     Return(Box<Self>),                         // Void
     While(Box<Self>, Box<Self>),               // Void
+    For(String, Box<Self>, Box<Self>),         // Void
     Continue,                                  // Void
     Break,                                     // Void
 }
@@ -296,6 +340,7 @@ impl Expr {
             Expr::Call(_, _) => true,
             Expr::Return(_) => false,
             Expr::While(_, _) => false,
+            Expr::For(_, _, _) => false,
             Expr::Continue => false,
             Expr::Break => false,
         }
@@ -366,6 +411,10 @@ impl Expr {
                 walker = cond_expr.walk(walker);
                 walker = inner_expr.walk(walker);
             }
+            Expr::For(_, iter_expr, inner_expr) => {
+                walker = iter_expr.walk(walker);
+                walker = inner_expr.walk(walker);
+            }
             Expr::Continue => {}
             Expr::Break => {}
         };
@@ -381,12 +430,14 @@ impl Expr {
             Expr::Unary(op, arg_expr) => {
                 if *op == UnaryOp::Reference {
                     if let Expr::Location(ptr, _) = arg_expr.as_ref() {
-                        return ptr
-                            .get()
-                            .to_absolute(&mut env.stack)
-                            .map(|i| Value::Pointer(Pointer::Absolute(i)))
-                            .unwrap_or(Value::Void)
-                            .to_flow();
+                        return match ptr.get() {
+                            Pointer::Function(i) => Value::Pointer(Pointer::Function(i)),
+                            ptr => ptr
+                                .to_absolute(&mut env.stack)
+                                .map(|i| Value::Pointer(Pointer::Absolute(i)))
+                                .unwrap_or(Value::Void),
+                        }
+                        .to_flow();
                     }
                     panic!("getting address of arbitrary expression is not supported")
                 }
@@ -394,7 +445,7 @@ impl Expr {
                     UnaryOp::Negate => Value::Number(arg.unwrap_number().wrapping_neg()),
                     UnaryOp::LogicNot => Value::Boolean(!arg.unwrap_boolean()),
                     UnaryOp::Dereference => match arg {
-                        Value::Pointer(i) => env.stack.get(i).cloned().unwrap_or(Value::Void),
+                        Value::Pointer(i) => env.get(i).unwrap_or(Value::Void),
                         _ => Value::Void,
                     },
                     UnaryOp::Reference => panic!("unreachable"),
@@ -468,19 +519,38 @@ impl Expr {
                     .eval_impl(env)
                     .and_then(|cond| {
                         if cond.unwrap_boolean() {
-                            Flow::Normal(())
+                            Flow::default()
                         } else {
                             Flow::Break
                         }
                     })
-                    .and_then(|_| inner_expr.eval_impl(env));
+                    .and_then(|_: ()| inner_expr.eval_impl(env));
                 match flow {
-                    Flow::Normal(_) => continue,
                     Flow::Return(_) => break flow,
-                    Flow::Continue => continue,
-                    Flow::Break => break Value::Void.to_flow(),
+                    Flow::Break => break Flow::default(),
+                    _ => continue,
                 }
             },
+            Expr::For(var, iter_expr, inner_expr) => iter_expr.eval_impl(env).and_then(|val| {
+                let flow = val.unwrap_range().into_iter().fold(
+                    Value::Void.to_flow(),
+                    |flow: Flow, i: i32| {
+                        flow.and_then(|_| {
+                            env.stack.push(var.clone(), Value::Number(i));
+                            let res = match inner_expr.eval_impl(env) {
+                                Flow::Continue => Flow::default(),
+                                flow => flow,
+                            };
+                            env.stack.pop();
+                            res
+                        })
+                    },
+                );
+                match flow {
+                    Flow::Break => Flow::default(),
+                    _ => flow,
+                }
+            }),
             Expr::Continue => Flow::Continue,
             Expr::Break => Flow::Break,
         }
@@ -551,6 +621,14 @@ impl Expr {
                 for _ in arg_names.iter() {
                     sym_stack.pop();
                 }
+                false
+            }
+            Expr::For(var, iter_expr, inner_expr) => {
+                iter_expr.set_up_impl(env, sym_stack);
+                sym_stack.push((var.clone(), None));
+                env.stack.push(var.clone(), Value::Void);
+                inner_expr.set_up_impl(env, sym_stack);
+                env.stack.pop();
                 false
             }
             _ => true,

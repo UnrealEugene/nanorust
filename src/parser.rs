@@ -49,6 +49,13 @@ impl BinaryOp {
     fn parse_logic_or() -> impl Parser<char, BinaryOp, Error = Simple<char>> + Clone {
         just("||").to(BinaryOp::LogicOr)
     }
+
+    fn parse_range() -> impl Parser<char, BinaryOp, Error = Simple<char>> + Clone {
+        choice((
+            just("..=").to(BinaryOp::RangeInclusive),
+            just("..").to(BinaryOp::Range),
+        ))
+    }
 }
 
 pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
@@ -60,7 +67,7 @@ pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
         let var = text::ident().padded();
 
         let num = text::int(10)
-            .map(|s: String| Expr::Constant(Value::Number(s.parse().unwrap())))
+            .map(|s: String| s.parse::<i32>().unwrap())
             .padded()
             .boxed();
 
@@ -127,7 +134,7 @@ pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
                 keyword("false").map(|_| Expr::Constant(Value::Boolean(false))),
                 var.clone()
                     .map(|var| Expr::Location(Cell::new(Pointer::Invalid), var)),
-                num,
+                num.map(|x| Expr::Constant(Value::Number(x))),
             ))
             .padded()
             .boxed();
@@ -198,6 +205,15 @@ pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
                 .foldl(|lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)))
                 .boxed();
 
+            let range = logic_or
+                .clone()
+                .then(BinaryOp::parse_range().then(logic_or).or_not())
+                .map(|(lhs, rhs_opt)| match rhs_opt {
+                    Some((op, rhs)) => Expr::Binary(op, Box::new(lhs), Box::new(rhs)),
+                    None => lhs,
+                })
+                .boxed();
+
             choice((
                 if_expr_cons(expr.clone()),
                 return_expr,
@@ -205,7 +221,7 @@ pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
                 keyword("break").map(|_| Expr::Break),
                 lambda.clone(),
                 block.clone(),
-                logic_or.clone(),
+                range.clone(),
             ))
             .padded()
             .boxed()
@@ -238,6 +254,16 @@ pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
             })
             .boxed();
 
+        let for_stmt = keyword("for")
+            .ignore_then(var.clone())
+            .then_ignore(keyword("in"))
+            .then(expr.clone())
+            .then(block.clone())
+            .map(|((var, iter_expr), inner_expr)| {
+                Expr::For(var, Box::new(iter_expr), Box::new(inner_expr))
+            })
+            .boxed();
+
         let func_stmt = keyword("fn")
             .ignore_then(var.clone())
             .then(var_list.clone().delimited_by(just("("), just(")")))
@@ -253,6 +279,7 @@ pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
             .clone()
             .or(if_expr_cons(expr.clone()))
             .or(while_stmt.clone())
+            .or(for_stmt.clone())
             .or(func_stmt.clone())
             .then(stmt.clone())
             .map(|(first_expr, second_opt)| {
