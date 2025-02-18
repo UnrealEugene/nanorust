@@ -1,11 +1,13 @@
 use core::cell::Cell;
 
 use crate::expr::*;
-use alloc::{boxed::Box, rc::Rc, string::String, vec};
+use alloc::{boxed::Box, rc::Rc, vec::Vec};
 use chumsky::prelude::*;
 
+type ParseError<'src> = extra::Err<Rich<'src, char>>;
+
 impl UnaryOp {
-    fn parse() -> impl Parser<char, UnaryOp, Error = Simple<char>> + Clone {
+    fn parse<'src>() -> impl Parser<'src, &'src str, UnaryOp, ParseError<'src>> + Copy + Clone {
         choice((
             just("-").to(UnaryOp::Negate),
             just("!").to(UnaryOp::LogicNot),
@@ -16,14 +18,16 @@ impl UnaryOp {
 }
 
 impl BinaryOp {
-    fn parse_sum() -> impl Parser<char, BinaryOp, Error = Simple<char>> + Clone {
+    fn parse_sum<'src>() -> impl Parser<'src, &'src str, BinaryOp, ParseError<'src>> + Copy + Clone
+    {
         choice((
             just("+").to(BinaryOp::Add),
             just("-").to(BinaryOp::Subtract),
         ))
     }
 
-    fn parse_product() -> impl Parser<char, BinaryOp, Error = Simple<char>> + Clone {
+    fn parse_product<'src>(
+    ) -> impl Parser<'src, &'src str, BinaryOp, ParseError<'src>> + Copy + Clone {
         choice((
             just("*").to(BinaryOp::Multiply),
             just("/").to(BinaryOp::Divide),
@@ -31,7 +35,8 @@ impl BinaryOp {
         ))
     }
 
-    fn parse_compare() -> impl Parser<char, BinaryOp, Error = Simple<char>> + Clone {
+    fn parse_compare<'src>(
+    ) -> impl Parser<'src, &'src str, BinaryOp, ParseError<'src>> + Copy + Clone {
         choice((
             just("==").to(BinaryOp::Equal),
             just("!=").to(BinaryOp::NotEqual),
@@ -42,15 +47,18 @@ impl BinaryOp {
         ))
     }
 
-    fn parse_logic_and() -> impl Parser<char, BinaryOp, Error = Simple<char>> + Clone {
+    fn parse_logic_and<'src>(
+    ) -> impl Parser<'src, &'src str, BinaryOp, ParseError<'src>> + Copy + Clone {
         just("&&").to(BinaryOp::LogicAnd)
     }
 
-    fn parse_logic_or() -> impl Parser<char, BinaryOp, Error = Simple<char>> + Clone {
+    fn parse_logic_or<'src>(
+    ) -> impl Parser<'src, &'src str, BinaryOp, ParseError<'src>> + Copy + Clone {
         just("||").to(BinaryOp::LogicOr)
     }
 
-    fn parse_range() -> impl Parser<char, BinaryOp, Error = Simple<char>> + Clone {
+    fn parse_range<'src>() -> impl Parser<'src, &'src str, BinaryOp, ParseError<'src>> + Copy + Clone
+    {
         choice((
             just("..=").to(BinaryOp::RangeInclusive),
             just("..").to(BinaryOp::Range),
@@ -58,16 +66,16 @@ impl BinaryOp {
     }
 }
 
-pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
+pub fn parse_stmt<'src>() -> impl Parser<'src, &'src str, Expr<'src>, ParseError<'src>> {
     recursive(|stmt| {
-        let token = |c| just(c).padded();
+        let token = |c: &'static str| just(c).padded();
 
-        let keyword = |s| text::keyword(s).padded();
+        let keyword = |s: &'static str| text::keyword(s).padded();
 
-        let var = text::ident().padded();
+        let var = text::ident::<'src, &'src str, _>().padded();
 
         let num = text::int(10)
-            .map(|s: String| s.parse::<i32>().unwrap())
+            .map(|s: &'src str| s.parse::<i32>().unwrap())
             .padded()
             .boxed();
 
@@ -100,15 +108,9 @@ pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
 
         let var_list = var
             .clone()
-            .map(|e| vec![e])
-            .then(token(",").ignore_then(var.clone()).repeated())
-            .foldl(|mut a, b| {
-                a.push(b);
-                a
-            })
-            .then_ignore(token(",").or_not())
-            .or_not()
-            .map(|opt| opt.unwrap_or_default())
+            .separated_by(just(","))
+            .allow_trailing()
+            .collect::<Vec<_>>()
             .padded()
             .boxed();
 
@@ -141,52 +143,49 @@ pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
 
             let expr_list = expr
                 .clone()
-                .map(|e| vec![e])
-                .then(token(",").ignore_then(expr.clone()).repeated())
-                .foldl(|mut a, b| {
-                    a.push(b);
-                    a
-                })
-                .then_ignore(token(",").or_not())
-                .or_not()
-                .map(|opt| opt.unwrap_or_default())
+                .separated_by(just(","))
+                .allow_trailing()
+                .collect::<Vec<_>>()
                 .padded()
                 .boxed();
 
             let call = atom
                 .clone()
-                .then(
+                .foldl(
                     expr_list
                         .clone()
                         .delimited_by(just("("), just(")"))
+                        .padded()
                         .repeated(),
+                    |fn_expr, arg_list| Expr::Call(Box::new(fn_expr), arg_list),
                 )
-                .foldl(|fn_expr, arg_list| Expr::Call(Box::new(fn_expr), arg_list))
-                .padded()
                 .boxed();
 
             let unary = UnaryOp::parse()
                 .padded()
                 .repeated()
-                .then(call.clone())
-                .foldr(|op, x| Expr::Unary(op, Box::new(x)))
+                .foldr(call.clone(), |op, x| Expr::Unary(op, Box::new(x)))
                 .boxed();
 
             let product = unary
                 .clone()
-                .then(BinaryOp::parse_product().padded().then(unary).repeated())
-                .foldl(|lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)))
+                .foldl(
+                    BinaryOp::parse_product().padded().then(unary).repeated(),
+                    |lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)),
+                )
                 .boxed();
 
             let sum = product
                 .clone()
-                .then(BinaryOp::parse_sum().then(product).repeated())
-                .foldl(|lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)))
+                .foldl(
+                    BinaryOp::parse_sum().padded().then(product).repeated(),
+                    |lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)),
+                )
                 .boxed();
 
             let compare = sum
                 .clone()
-                .then(BinaryOp::parse_compare().then(sum).or_not())
+                .then(BinaryOp::parse_compare().padded().then(sum).or_not())
                 .map(|(lhs, rhs_opt)| match rhs_opt {
                     Some((op, rhs)) => Expr::Binary(op, Box::new(lhs), Box::new(rhs)),
                     None => lhs,
@@ -195,14 +194,24 @@ pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
 
             let logic_and = compare
                 .clone()
-                .then(BinaryOp::parse_logic_and().then(compare).repeated())
-                .foldl(|lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)))
+                .foldl(
+                    BinaryOp::parse_logic_and()
+                        .padded()
+                        .then(compare)
+                        .repeated(),
+                    |lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)),
+                )
                 .boxed();
 
             let logic_or = logic_and
                 .clone()
-                .then(BinaryOp::parse_logic_or().then(logic_and).repeated())
-                .foldl(|lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)))
+                .foldl(
+                    BinaryOp::parse_logic_or()
+                        .padded()
+                        .then(logic_and)
+                        .repeated(),
+                    |lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)),
+                )
                 .boxed();
 
             let range = logic_or
@@ -228,7 +237,7 @@ pub fn stmt() -> impl Parser<char, Expr, Error = Simple<char>> {
         });
 
         let let_expr = keyword("let")
-            .ignore_then(var)
+            .ignore_then(var.clone())
             .then(token("=").ignore_then(expr.clone()).or_not())
             .map(|(var, rhs)| Expr::Let(var, Box::new(rhs.unwrap_or(Expr::Skip))))
             .boxed();

@@ -6,7 +6,7 @@ use core::{
     ops::{Deref, Range, RangeInclusive},
 };
 
-use alloc::{boxed::Box, rc::Rc, string::String, vec::Vec};
+use alloc::{boxed::Box, rc::Rc, vec::Vec};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
@@ -36,28 +36,36 @@ pub enum BinaryOp {
 }
 
 impl BinaryOp {
-    fn calc_num_to_num<F: FnOnce(i32, i32) -> i32>(a: Value, b: Value, f: F) -> Value {
+    fn calc_num_to_num<'src, F: FnOnce(i32, i32) -> i32>(a: Value, b: Value, f: F) -> Value<'src> {
         Value::Number(f(a.unwrap_number(), b.unwrap_number()))
     }
 
-    fn calc_num_to_bool<F: FnOnce(&i32, &i32) -> bool>(a: Value, b: Value, f: F) -> Value {
+    fn calc_num_to_bool<'src, F: FnOnce(&i32, &i32) -> bool>(
+        a: Value,
+        b: Value,
+        f: F,
+    ) -> Value<'src> {
         Value::Boolean(f(&a.unwrap_number(), &b.unwrap_number()))
     }
 
-    fn calc_num_to_any<T, F: FnOnce(i32, i32) -> T, G: Fn(T) -> Value>(
+    fn calc_num_to_any<'src, T, F: FnOnce(i32, i32) -> T, G: Fn(T) -> Value<'src>>(
         a: Value,
         b: Value,
         f: F,
         cons: G,
-    ) -> Value {
+    ) -> Value<'src> {
         cons(f(a.unwrap_number(), b.unwrap_number()))
     }
 
-    fn calc_bool_to_bool<F: FnOnce(bool, bool) -> bool>(a: Value, b: Value, f: F) -> Value {
+    fn calc_bool_to_bool<'src, F: FnOnce(bool, bool) -> bool>(
+        a: Value<'src>,
+        b: Value<'src>,
+        f: F,
+    ) -> Value<'src> {
         Value::Boolean(f(a.unwrap_boolean(), b.unwrap_boolean()))
     }
 
-    pub fn calc(&self, a: Value, b: Value) -> Value {
+    pub fn calc<'src>(&self, a: Value<'src>, b: Value<'src>) -> Value<'src> {
         match self {
             Self::Add => Self::calc_num_to_num(a, b, i32::wrapping_add),
             Self::Subtract => Self::calc_num_to_num(a, b, i32::wrapping_sub),
@@ -100,24 +108,24 @@ impl Pointer {
 }
 
 #[derive(Debug, Clone)]
-pub enum Value {
+pub enum Value<'src> {
     Number(i32),
     Boolean(bool),
     Range(Range<i32>),
     RangeInclusive(RangeInclusive<i32>),
     Pointer(Pointer),
     Function(usize),
-    Closure(Rc<Function>),
+    Closure(Rc<Function<'src>>),
     Void,
 }
 
-impl Default for Value {
+impl<'src> Default for Value<'src> {
     fn default() -> Self {
         Value::Void
     }
 }
 
-impl Value {
+impl<'src> Value<'src> {
     fn unwrap_number(self) -> i32 {
         match self {
             Value::Number(val) => val,
@@ -147,7 +155,7 @@ impl Value {
         }
     }
 
-    fn unwrap_function(self, env: &Environment) -> Rc<Function> {
+    fn unwrap_function(self, env: &Environment<'src>) -> Rc<Function<'src>> {
         match self {
             Value::Function(i) => env.functions.get(i).unwrap().clone(),
             Value::Closure(func) => func,
@@ -155,26 +163,26 @@ impl Value {
         }
     }
 
-    fn to_flow(self) -> Flow {
+    fn to_flow(self) -> Flow<'src> {
         Flow::Normal(self)
     }
 }
 
-enum Flow<R = Value> {
+enum Flow<'src, R = Value<'src>> {
     Normal(R),
-    Return(Value),
+    Return(Value<'src>),
     Continue,
     Break,
 }
 
-impl<T: Default> Default for Flow<T> {
+impl<'src, T: Default> Default for Flow<'src, T> {
     fn default() -> Self {
         Flow::Normal(T::default())
     }
 }
 
-impl<T> Flow<T> {
-    fn chain<R, F: FnOnce() -> Flow<R>>(self, f: F) -> Flow<(T, R)> {
+impl<'src, T> Flow<'src, T> {
+    fn chain<R, F: FnOnce() -> Flow<'src, R>>(self, f: F) -> Flow<'src, (T, R)> {
         self.and_then(|first| match f() {
             Flow::Normal(second) => Flow::Normal((first, second)),
             Flow::Return(val) => Flow::Return(val),
@@ -183,7 +191,7 @@ impl<T> Flow<T> {
         })
     }
 
-    fn and_then<R, F: FnOnce(T) -> Flow<R>>(self, f: F) -> Flow<R> {
+    fn and_then<R, F: FnOnce(T) -> Flow<'src, R>>(self, f: F) -> Flow<'src, R> {
         match self {
             Flow::Normal(val) => match f(val) {
                 Flow::Normal(second) => Flow::Normal(second),
@@ -197,7 +205,7 @@ impl<T> Flow<T> {
         }
     }
 
-    fn map<R, F: FnOnce(T) -> R>(self, f: F) -> Flow<R> {
+    fn map<R, F: FnOnce(T) -> R>(self, f: F) -> Flow<'src, R> {
         match self {
             Flow::Normal(val) => Flow::Normal(f(val)),
             Flow::Return(val) => Flow::Return(val),
@@ -207,8 +215,8 @@ impl<T> Flow<T> {
     }
 }
 
-impl Flow {
-    fn to_value(self) -> Value {
+impl<'src> Flow<'src> {
+    fn to_value(self) -> Value<'src> {
         match self {
             Flow::Normal(val) => val,
             Flow::Return(val) => val,
@@ -219,75 +227,75 @@ impl Flow {
 }
 
 #[derive(Debug)]
-pub struct Function(pub Vec<String>, pub Box<Expr>);
+pub struct Function<'src>(pub Vec<&'src str>, pub Box<Expr<'src>>);
 
 #[derive(Debug)]
-pub enum Expr {
-    Skip,                                      // Void
-    Ignore(Box<Self>),                         // Void
-    Location(Cell<Pointer>, String),           // Value
-    Constant(Value),                           // Value
-    Unary(UnaryOp, Box<Self>),                 // Value
-    Binary(BinaryOp, Box<Self>, Box<Self>),    // Value
-    Assign(Box<Self>, Box<Self>),              // Void
-    Seq(Box<Self>, Box<Self>),                 // any
-    Let(String, Box<Self>),                    // Void
-    VarScope(String, Box<Self>, Box<Self>),    // any
-    Function(String, Rc<Function>),            // Void
-    FunScope(String, Rc<Function>, Box<Self>), // any
-    If(Box<Self>, Box<Self>, Box<Self>),       // any
-    Closure(Rc<Function>),                     // Value
-    Call(Box<Self>, Vec<Self>),                // Value
-    Return(Box<Self>),                         // Void
-    While(Box<Self>, Box<Self>),               // Void
-    For(String, Box<Self>, Box<Self>),         // Void
-    Continue,                                  // Void
-    Break,                                     // Void
+pub enum Expr<'src> {
+    Skip,                                               // Void
+    Ignore(Box<Self>),                                  // Void
+    Location(Cell<Pointer>, &'src str),                 // Value
+    Constant(Value<'src>),                              // Value
+    Unary(UnaryOp, Box<Self>),                          // Value
+    Binary(BinaryOp, Box<Self>, Box<Self>),             // Value
+    Assign(Box<Self>, Box<Self>),                       // Void
+    Seq(Box<Self>, Box<Self>),                          // any
+    Let(&'src str, Box<Self>),                          // Void
+    VarScope(&'src str, Box<Self>, Box<Self>),          // any
+    Function(&'src str, Rc<Function<'src>>),            // Void
+    FunScope(&'src str, Rc<Function<'src>>, Box<Self>), // any
+    If(Box<Self>, Box<Self>, Box<Self>),                // any
+    Closure(Rc<Function<'src>>),                        // Value
+    Call(Box<Self>, Vec<Self>),                         // Value
+    Return(Box<Self>),                                  // Void
+    While(Box<Self>, Box<Self>),                        // Void
+    For(&'src str, Box<Self>, Box<Self>),               // Void
+    Continue,                                           // Void
+    Break,                                              // Void
 }
 
 #[derive(Default)]
-struct Stack(Vec<(String, Value)>);
+struct Stack<'src>(Vec<(&'src str, Value<'src>)>);
 
 #[derive(Default)]
-pub struct Environment {
-    stack: Stack,
-    functions: Vec<Rc<Function>>,
+pub struct Environment<'src> {
+    stack: Stack<'src>,
+    functions: Vec<Rc<Function<'src>>>,
 }
 
-impl Stack {
+impl<'src> Stack<'src> {
     fn new() -> Self {
         Self::default()
     }
 
-    fn get(&self, ptr: Pointer) -> Option<&Value> {
+    fn get(&self, ptr: Pointer) -> Option<&Value<'src>> {
         let index_opt = ptr.to_absolute(&self);
         index_opt.and_then(|i| self.0.get(i)).map(|e| &e.1)
     }
 
     fn index<Q>(&self, k: &Q) -> Option<usize>
     where
-        String: Borrow<Q>,
+        &'src str: Borrow<Q>,
         Q: Eq + ?Sized,
     {
         self.0.iter().rev().position(|(var, _)| var.borrow() == k)
     }
 
-    fn assign(&mut self, ptr: Pointer, v: Value) {
+    fn assign(&mut self, ptr: Pointer, v: Value<'src>) {
         let index_opt = ptr.to_absolute(&self);
         index_opt.and_then(|i| self.0.get_mut(i)).map(|e| e.1 = v);
     }
 
-    fn push(&mut self, k: String, v: Value) {
+    fn push(&mut self, k: &'src str, v: Value<'src>) {
         self.0.push((k, v));
     }
 
-    fn pop(&mut self) -> Option<(String, Value)> {
+    fn pop(&mut self) -> Option<(&'src str, Value<'src>)> {
         self.0.pop()
     }
 }
 
-impl Environment {
-    fn get(&self, ptr: Pointer) -> Option<Value> {
+impl<'src> Environment<'src> {
+    fn get(&self, ptr: Pointer) -> Option<Value<'src>> {
         self.stack.get(ptr).cloned().or_else(|| match ptr {
             Pointer::Function(i) => Some(Value::Function(i)),
             _ => None,
@@ -295,7 +303,7 @@ impl Environment {
     }
 }
 
-impl Expr {
+impl<'src> Expr<'src> {
     pub fn new_ignore(inner_expr: Self) -> Self {
         if inner_expr.is_value() {
             Expr::Ignore(Box::new(inner_expr))
@@ -421,7 +429,7 @@ impl Expr {
         walker
     }
 
-    fn eval_impl(&self, env: &mut Environment) -> Flow {
+    fn eval_impl(&self, env: &mut Environment<'src>) -> Flow<'src> {
         match self {
             Expr::Skip => Flow::Normal(Value::Void),
             Expr::Ignore(expr) => expr.eval_impl(env).map(|_| Value::Void),
@@ -469,7 +477,7 @@ impl Expr {
                 panic!("Expr::Let is an intermediate node and can't be present in final AST")
             }
             Expr::VarScope(var, val_expr, cont_expr) => val_expr.eval_impl(env).and_then(|val| {
-                env.stack.push(var.clone(), val);
+                env.stack.push(var, val);
                 let res = cont_expr.eval_impl(env);
                 env.stack.pop();
                 res
@@ -505,7 +513,7 @@ impl Expr {
                         })
                         .map(|arg_vals| {
                             zip(arg_names.iter(), arg_vals.iter())
-                                .for_each(|(name, val)| env.stack.push(name.clone(), val.clone()));
+                                .for_each(|(name, val)| env.stack.push(name, val.clone()));
                             let res = body_expr.eval_impl(env);
                             arg_names.iter().for_each(|_| {
                                 env.stack.pop();
@@ -536,7 +544,7 @@ impl Expr {
                     Value::Void.to_flow(),
                     |flow: Flow, i: i32| {
                         flow.and_then(|_| {
-                            env.stack.push(var.clone(), Value::Number(i));
+                            env.stack.push(var, Value::Number(i));
                             let res = match inner_expr.eval_impl(env) {
                                 Flow::Continue => Flow::default(),
                                 flow => flow,
@@ -556,11 +564,17 @@ impl Expr {
         }
     }
 
-    pub fn eval(&self, mut env: Environment) -> Value {
-        self.eval_impl(&mut env).to_value()
+    pub fn eval(&self, mut env: Environment<'src>) -> Value<'src> {
+        let res = self.eval_impl(&mut env).to_value();
+        drop(env);
+        res
     }
 
-    fn set_up_impl(&self, env: &mut Environment, sym_stack: &mut Vec<(String, Option<usize>)>) {
+    fn set_up_impl(
+        &self,
+        env: &mut Environment<'src>,
+        sym_stack: &mut Vec<(&'src str, Option<usize>)>,
+    ) {
         let _ = self.walk(|expr| match expr {
             Expr::Location(ptr, var) => {
                 let opt = sym_stack
@@ -581,8 +595,8 @@ impl Expr {
             }
             Expr::VarScope(var, val_expr, cont_expr) => {
                 val_expr.set_up_impl(env, sym_stack);
-                sym_stack.push((var.clone(), None));
-                env.stack.push(var.clone(), Value::Void);
+                sym_stack.push((var, None));
+                env.stack.push(var, Value::Void);
                 cont_expr.set_up_impl(env, sym_stack);
                 env.stack.pop();
                 false
@@ -590,12 +604,12 @@ impl Expr {
             Expr::FunScope(name, func, cont_expr) => {
                 // disallow accessing variables outside of closure
                 let Function(arg_names, body_expr) = func.deref();
-                sym_stack.push((name.clone(), Some(env.functions.len())));
+                sym_stack.push((name, Some(env.functions.len())));
                 env.functions.push(func.clone());
                 let mut new_stack = Stack::new();
                 for arg_name in arg_names.iter() {
-                    new_stack.push(arg_name.clone(), Value::Void);
-                    sym_stack.push((arg_name.clone(), None));
+                    new_stack.push(arg_name, Value::Void);
+                    sym_stack.push((arg_name, None));
                 }
                 mem::swap(&mut env.stack, &mut new_stack);
                 body_expr.set_up_impl(env, sym_stack);
@@ -612,8 +626,8 @@ impl Expr {
                 let Function(arg_names, body_expr) = func.deref();
                 let mut new_stack = Stack::new();
                 for arg_name in arg_names.iter() {
-                    new_stack.push(arg_name.clone(), Value::Void);
-                    sym_stack.push((arg_name.clone(), None));
+                    new_stack.push(arg_name, Value::Void);
+                    sym_stack.push((arg_name, None));
                 }
                 mem::swap(&mut env.stack, &mut new_stack);
                 body_expr.set_up_impl(env, sym_stack);
@@ -625,8 +639,8 @@ impl Expr {
             }
             Expr::For(var, iter_expr, inner_expr) => {
                 iter_expr.set_up_impl(env, sym_stack);
-                sym_stack.push((var.clone(), None));
-                env.stack.push(var.clone(), Value::Void);
+                sym_stack.push((var, None));
+                env.stack.push(var, Value::Void);
                 inner_expr.set_up_impl(env, sym_stack);
                 env.stack.pop();
                 false
@@ -635,9 +649,9 @@ impl Expr {
         });
     }
 
-    pub fn set_up(&self) -> Environment {
+    pub fn set_up(&self) -> Environment<'src> {
         let mut env = Environment::default();
-        let mut sym_stack: Vec<(String, Option<usize>)> = Vec::new();
+        let mut sym_stack: Vec<(&'src str, Option<usize>)> = Vec::new();
         self.set_up_impl(&mut env, &mut sym_stack);
         env
     }
