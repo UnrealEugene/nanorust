@@ -2,7 +2,7 @@ use core::cell::Cell;
 
 use crate::expr::*;
 use alloc::{boxed::Box, rc::Rc, vec::Vec};
-use chumsky::prelude::*;
+use chumsky::{input::MapExtra, prelude::*};
 
 type ParseError<'src> = extra::Err<Rich<'src, char>>;
 
@@ -14,6 +14,7 @@ impl UnaryOp {
             just("&").to(UnaryOp::Reference),
             just("*").to(UnaryOp::Dereference),
         ))
+        .labelled("unary operator")
     }
 }
 
@@ -24,6 +25,7 @@ impl BinaryOp {
             just("+").to(BinaryOp::Add),
             just("-").to(BinaryOp::Subtract),
         ))
+        .labelled("binary operator")
     }
 
     fn parse_product<'src>(
@@ -33,6 +35,7 @@ impl BinaryOp {
             just("/").to(BinaryOp::Divide),
             just("%").to(BinaryOp::Modulo),
         ))
+        .labelled("binary operator")
     }
 
     fn parse_compare<'src>(
@@ -45,16 +48,19 @@ impl BinaryOp {
             just("<").to(BinaryOp::Less),
             just(">").to(BinaryOp::Greater),
         ))
+        .labelled("binary operator")
     }
 
     fn parse_logic_and<'src>(
     ) -> impl Parser<'src, &'src str, BinaryOp, ParseError<'src>> + Copy + Clone {
-        just("&&").to(BinaryOp::LogicAnd)
+        just("&&")
+            .to(BinaryOp::LogicAnd)
+            .labelled("binary operator")
     }
 
     fn parse_logic_or<'src>(
     ) -> impl Parser<'src, &'src str, BinaryOp, ParseError<'src>> + Copy + Clone {
-        just("||").to(BinaryOp::LogicOr)
+        just("||").to(BinaryOp::LogicOr).labelled("binary operator")
     }
 
     fn parse_range<'src>() -> impl Parser<'src, &'src str, BinaryOp, ParseError<'src>> + Copy + Clone
@@ -63,26 +69,34 @@ impl BinaryOp {
             just("..=").to(BinaryOp::RangeInclusive),
             just("..").to(BinaryOp::Range),
         ))
+        .labelled("binary operator")
     }
 }
 
-pub fn parse_stmt<'src>() -> impl Parser<'src, &'src str, Expr<'src>, ParseError<'src>> {
+fn span_wrap<'src, T>(x: T, e: &mut MapExtra<'src, '_, &'src str, ParseError<'src>>) -> Spanned<T> {
+    Spanned(x, e.span())
+}
+
+pub fn parse_stmt<'src>() -> impl Parser<'src, &'src str, Spanned<Expr<'src>>, ParseError<'src>> {
     recursive(|stmt| {
         let token = |c: &'static str| just(c).padded();
 
         let keyword = |s: &'static str| text::keyword(s).padded();
 
-        let var = text::ident::<'src, &'src str, _>().padded();
+        let var = text::ident::<'src, &'src str, _>()
+            .map_with(span_wrap)
+            .padded();
 
-        let num = text::int(10)
-            .map(|s: &'src str| s.parse::<i32>().unwrap())
-            .padded()
-            .boxed();
+        let num = text::int(10).from_str().unwrapped().labelled("integer").boxed();
 
         let block = stmt
             .clone()
             .delimited_by(just("{"), just("}"))
-            .map(|opt: Option<Expr>| opt.unwrap_or(Expr::Skip))
+            .map(|opt: Spanned<Option<Expr>>| {
+                Expr::Block(Box::new(opt.map(Option::unwrap_or_default)))
+            })
+            .map_with(span_wrap)
+            .labelled("block")
             .padded()
             .boxed();
 
@@ -96,13 +110,14 @@ pub fn parse_stmt<'src>() -> impl Parser<'src, &'src str, Expr<'src>, ParseError
                             .ignore_then(if_stmt.or(block.clone()))
                             .or_not(),
                     )
-                    .map(|((cond, if_true), if_false)| {
+                    .map_with(|((cond, if_true), if_false), e| {
                         Expr::If(
                             Box::new(cond),
                             Box::new(if_true),
-                            Box::new(if_false.unwrap_or(Expr::Skip)),
+                            Box::new(Spanned::unwrap_or_default(if_false, e.span())),
                         )
                     })
+                    .map_with(span_wrap)
             })
         };
 
@@ -115,29 +130,35 @@ pub fn parse_stmt<'src>() -> impl Parser<'src, &'src str, Expr<'src>, ParseError
             .boxed();
 
         let expr = recursive(|expr| {
-            let lambda = token("|")
-                .ignore_then(var_list.clone())
-                .then_ignore(token("|"))
+            let lambda = var_list
+                .clone()
+                .delimited_by(just("|"), just("|"))
                 .then(expr.clone())
                 .map(|(var_names, body_expr)| {
                     Expr::Closure(Rc::new(Function(var_names, Box::new(body_expr))))
                 })
+                .map_with(span_wrap)
                 .padded()
                 .boxed();
 
             let return_expr = keyword("return")
-                .ignore_then(expr.clone())
-                .map(|val| Expr::Return(Box::new(val)))
+                .ignore_then(expr.clone().or_not())
+                .map_with(|opt, e| {
+                    Expr::Return(Box::new(Spanned::unwrap_or_default(opt, e.span())))
+                })
+                .map_with(span_wrap)
                 .boxed();
 
             let atom = choice((
-                expr.clone().delimited_by(just('('), just(')')),
+                expr.clone().delimited_by(just('('), just(')')).map(|s| s.0),
                 keyword("true").map(|_| Expr::Constant(Value::Boolean(true))),
                 keyword("false").map(|_| Expr::Constant(Value::Boolean(false))),
                 var.clone()
-                    .map(|var| Expr::Location(Cell::new(Pointer::Invalid), var)),
+                    .map(|var| Expr::Location(Cell::new(Pointer::Invalid), var.0)),
                 num.map(|x| Expr::Constant(Value::Number(x))),
             ))
+            .map_with(span_wrap)
+            .labelled("expression")
             .padded()
             .boxed();
 
@@ -151,74 +172,91 @@ pub fn parse_stmt<'src>() -> impl Parser<'src, &'src str, Expr<'src>, ParseError
 
             let call = atom
                 .clone()
-                .foldl(
+                .foldl_with(
                     expr_list
                         .clone()
-                        .delimited_by(just("("), just(")"))
+                        .delimited_by(just("(").labelled("function call"), just(")"))
                         .padded()
                         .repeated(),
-                    |fn_expr, arg_list| Expr::Call(Box::new(fn_expr), arg_list),
+                    |fn_expr, arg_list, e| {
+                        Spanned(Expr::Call(Box::new(fn_expr), arg_list), e.span())
+                    },
                 )
                 .boxed();
 
             let unary = UnaryOp::parse()
+                .labelled("expression")
                 .padded()
                 .repeated()
-                .foldr(call.clone(), |op, x| Expr::Unary(op, Box::new(x)))
+                .foldr_with(call.clone(), |op, x, e| {
+                    Spanned(Expr::Unary(op, Box::new(x)), e.span())
+                })
                 .boxed();
 
             let product = unary
                 .clone()
-                .foldl(
+                .foldl_with(
                     BinaryOp::parse_product().padded().then(unary).repeated(),
-                    |lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)),
+                    |lhs, (op, rhs), e| {
+                        Spanned(Expr::Binary(op, Box::new(lhs), Box::new(rhs)), e.span())
+                    },
                 )
                 .boxed();
 
             let sum = product
                 .clone()
-                .foldl(
+                .foldl_with(
                     BinaryOp::parse_sum().padded().then(product).repeated(),
-                    |lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)),
+                    |lhs, (op, rhs), e| {
+                        Spanned(Expr::Binary(op, Box::new(lhs), Box::new(rhs)), e.span())
+                    },
                 )
                 .boxed();
 
             let compare = sum
                 .clone()
                 .then(BinaryOp::parse_compare().padded().then(sum).or_not())
-                .map(|(lhs, rhs_opt)| match rhs_opt {
-                    Some((op, rhs)) => Expr::Binary(op, Box::new(lhs), Box::new(rhs)),
+                .map_with(|(lhs, rhs_opt), e| match rhs_opt {
+                    Some((op, rhs)) => {
+                        Spanned(Expr::Binary(op, Box::new(lhs), Box::new(rhs)), e.span())
+                    }
                     None => lhs,
                 })
                 .boxed();
 
             let logic_and = compare
                 .clone()
-                .foldl(
+                .foldl_with(
                     BinaryOp::parse_logic_and()
                         .padded()
                         .then(compare)
                         .repeated(),
-                    |lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)),
+                    |lhs, (op, rhs), e| {
+                        Spanned(Expr::Binary(op, Box::new(lhs), Box::new(rhs)), e.span())
+                    },
                 )
                 .boxed();
 
             let logic_or = logic_and
                 .clone()
-                .foldl(
+                .foldl_with(
                     BinaryOp::parse_logic_or()
                         .padded()
                         .then(logic_and)
                         .repeated(),
-                    |lhs, (op, rhs)| Expr::Binary(op, Box::new(lhs), Box::new(rhs)),
+                    |lhs, (op, rhs), e| {
+                        Spanned(Expr::Binary(op, Box::new(lhs), Box::new(rhs)), e.span())
+                    },
                 )
                 .boxed();
 
             let range = logic_or
                 .clone()
                 .then(BinaryOp::parse_range().then(logic_or).or_not())
-                .map(|(lhs, rhs_opt)| match rhs_opt {
-                    Some((op, rhs)) => Expr::Binary(op, Box::new(lhs), Box::new(rhs)),
+                .map_with(|(lhs, rhs_opt), e| match rhs_opt {
+                    Some((op, rhs)) => {
+                        Spanned(Expr::Binary(op, Box::new(lhs), Box::new(rhs)), e.span())
+                    }
                     None => lhs,
                 })
                 .boxed();
@@ -226,12 +264,15 @@ pub fn parse_stmt<'src>() -> impl Parser<'src, &'src str, Expr<'src>, ParseError
             choice((
                 if_expr_cons(expr.clone()),
                 return_expr,
-                keyword("continue").map(|_| Expr::Continue),
-                keyword("break").map(|_| Expr::Break),
+                keyword("continue")
+                    .map(|_| Expr::Continue)
+                    .map_with(span_wrap),
+                keyword("break").map(|_| Expr::Break).map_with(span_wrap),
                 lambda.clone(),
                 block.clone(),
                 range.clone(),
             ))
+            .labelled("expression")
             .padded()
             .boxed()
         });
@@ -239,7 +280,13 @@ pub fn parse_stmt<'src>() -> impl Parser<'src, &'src str, Expr<'src>, ParseError
         let let_expr = keyword("let")
             .ignore_then(var.clone())
             .then(token("=").ignore_then(expr.clone()).or_not())
-            .map(|(var, rhs)| Expr::Let(var, Box::new(rhs.unwrap_or(Expr::Skip))))
+            .map_with(|(var, rhs), e| {
+                Expr::Let(
+                    var,
+                    Box::new(rhs.unwrap_or(Spanned(Expr::default(), e.span().to_end()))),
+                )
+            })
+            .map_with(span_wrap)
             .boxed();
 
         let assign = var
@@ -247,12 +294,18 @@ pub fn parse_stmt<'src>() -> impl Parser<'src, &'src str, Expr<'src>, ParseError
             .map(|var| {
                 Expr::Unary(
                     UnaryOp::Reference,
-                    Box::new(Expr::Location(Cell::new(Pointer::Invalid), var)),
+                    Box::new(var.map(|var| Expr::Location(Cell::new(Pointer::Invalid), var))),
                 )
             })
-            .or(token("*").ignore_then(expr.clone()))
-            .then(token("=").ignore_then(expr.clone()))
+            .map_with(span_wrap)
+            // .or(token("*").ignore_then(expr.clone())) // TODO: fix precedence
+            .then(
+                token("=")
+                    .labelled("binary operator")
+                    .ignore_then(expr.clone()),
+            )
             .map(|(lhs, rhs)| Expr::Assign(Box::new(lhs), Box::new(rhs)))
+            .map_with(span_wrap)
             .boxed();
 
         let while_stmt = keyword("while")
@@ -261,6 +314,7 @@ pub fn parse_stmt<'src>() -> impl Parser<'src, &'src str, Expr<'src>, ParseError
             .map(|(cond_expr, inner_expr)| {
                 Expr::While(Box::new(cond_expr), Box::new(Expr::new_ignore(inner_expr)))
             })
+            .map_with(span_wrap)
             .boxed();
 
         let for_stmt = keyword("for")
@@ -271,6 +325,7 @@ pub fn parse_stmt<'src>() -> impl Parser<'src, &'src str, Expr<'src>, ParseError
             .map(|((var, iter_expr), inner_expr)| {
                 Expr::For(var, Box::new(iter_expr), Box::new(inner_expr))
             })
+            .map_with(span_wrap)
             .boxed();
 
         let func_stmt = keyword("fn")
@@ -280,45 +335,70 @@ pub fn parse_stmt<'src>() -> impl Parser<'src, &'src str, Expr<'src>, ParseError
             .map(|((name, var_names), body_expr)| {
                 Expr::Function(name, Rc::new(Function(var_names, Box::new(body_expr))))
             })
+            .map_with(span_wrap)
             .boxed();
 
-        let atom = choice((let_expr, assign, expr.clone())).padded().boxed();
+        let ends_with_block = choice((
+            block.clone(),
+            if_expr_cons(expr.clone()),
+            while_stmt.clone(),
+            for_stmt.clone(),
+            func_stmt.clone(),
+        ))
+        .boxed();
 
-        block
+        let atom = choice((let_expr, assign, expr.clone()))
+            .labelled("statement")
+            .padded()
+            .boxed();
+
+        ends_with_block
             .clone()
-            .or(if_expr_cons(expr.clone()))
-            .or(while_stmt.clone())
-            .or(for_stmt.clone())
-            .or(func_stmt.clone())
             .then(stmt.clone())
             .map(|(first_expr, second_opt)| {
-                Some(match second_opt {
-                    Some(second_expr) => Expr::new_seq(first_expr, second_expr),
-                    None => first_expr,
+                Some(match second_opt.0 {
+                    Some(_) => Expr::new_seq(first_expr, second_opt.map(Option::unwrap)),
+                    None => first_expr.0,
                 })
             })
+            .map_with(span_wrap)
             .or(atom
                 .clone()
                 .or_not()
-                .then(token(";").ignore_then(stmt.clone()).or_not())
-                .map(|(first_opt, second_opt)| match second_opt {
-                    Some(second_opt) => Some(Expr::new_seq(
-                        first_opt.unwrap_or(Expr::Skip),
-                        second_opt.unwrap_or(Expr::Skip),
-                    )),
-                    None => first_opt,
+                .map_with(|opt, e| Spanned::unwrap_or_default(opt, e.span()))
+                .then(
+                    token(";")
+                        .labelled("semicolon")
+                        .ignore_then(stmt.clone())
+                        .or_not(),
+                )
+                .map_with(|(first_expr, second_opt), e| match second_opt {
+                    Some(second_opt) => Spanned(
+                        Some(Expr::new_seq(
+                            first_expr,
+                            second_opt.map(Option::unwrap_or_default),
+                        )),
+                        e.span(),
+                    ),
+                    None => first_expr.map(Option::Some),
                 }))
-            .map(|expr_opt| match expr_opt {
-                Some(Expr::Let(var, val_expr)) => {
-                    Some(Expr::VarScope(var, val_expr, Box::new(Expr::Skip)))
-                }
-                Some(Expr::Function(name, func)) => {
-                    Some(Expr::FunScope(name, func, Box::new(Expr::Skip)))
-                }
-                _ => expr_opt,
+            .map_with(|opt: Spanned<Option<Expr>>, e| {
+                opt.map(|opt| match opt {
+                    Some(Expr::Let(var, val_expr)) => Some(Expr::VarScope(
+                        var,
+                        val_expr,
+                        Box::new(Spanned(Default::default(), e.span().to_end())),
+                    )),
+                    Some(Expr::Function(name, func)) => Some(Expr::FunScope(
+                        name,
+                        func,
+                        Box::new(Spanned(Default::default(), e.span().to_end())),
+                    )),
+                    _ => opt,
+                })
             })
             .padded()
     })
-    .map(|opt: Option<Expr>| opt.unwrap_or(Expr::Skip))
+    .map(|opt: Spanned<Option<Expr>>| opt.map(Option::unwrap_or_default))
     .then_ignore(end())
 }

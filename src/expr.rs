@@ -3,10 +3,44 @@ use core::{
     cell::Cell,
     iter::zip,
     mem,
-    ops::{Deref, Range, RangeInclusive},
+    ops::{Deref, DerefMut, Range, RangeInclusive},
 };
 
 use alloc::{boxed::Box, rc::Rc, vec::Vec};
+use chumsky::span::{SimpleSpan, Span};
+
+#[derive(Debug)]
+pub struct Spanned<T>(pub T, pub SimpleSpan);
+
+impl<T> Spanned<T> {
+    pub fn span(&self) -> SimpleSpan {
+        self.1
+    }
+
+    pub fn map<R, F: FnOnce(T) -> R>(self, f: F) -> Spanned<R> {
+        Spanned(f(self.0), self.1)
+    }
+}
+
+impl<T: Default> Spanned<T> {
+    pub fn unwrap_or_default(opt: Option<Spanned<T>>, span: SimpleSpan) -> Spanned<T> {
+        opt.unwrap_or(Spanned(Default::default(), span.to_end()))
+    }
+}
+
+impl<T> Deref for Spanned<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> DerefMut for Spanned<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
@@ -227,30 +261,37 @@ impl<'src> Flow<'src> {
 }
 
 #[derive(Debug)]
-pub struct Function<'src>(pub Vec<&'src str>, pub Box<Expr<'src>>);
+pub struct Function<'src>(pub Vec<Spanned<&'src str>>, pub Box<Spanned<Expr<'src>>>);
 
 #[derive(Debug)]
 pub enum Expr<'src> {
-    Skip,                                               // Void
-    Ignore(Box<Self>),                                  // Void
-    Location(Cell<Pointer>, &'src str),                 // Value
-    Constant(Value<'src>),                              // Value
-    Unary(UnaryOp, Box<Self>),                          // Value
-    Binary(BinaryOp, Box<Self>, Box<Self>),             // Value
-    Assign(Box<Self>, Box<Self>),                       // Void
-    Seq(Box<Self>, Box<Self>),                          // any
-    Let(&'src str, Box<Self>),                          // Void
-    VarScope(&'src str, Box<Self>, Box<Self>),          // any
-    Function(&'src str, Rc<Function<'src>>),            // Void
-    FunScope(&'src str, Rc<Function<'src>>, Box<Self>), // any
-    If(Box<Self>, Box<Self>, Box<Self>),                // any
-    Closure(Rc<Function<'src>>),                        // Value
-    Call(Box<Self>, Vec<Self>),                         // Value
-    Return(Box<Self>),                                  // Void
-    While(Box<Self>, Box<Self>),                        // Void
-    For(&'src str, Box<Self>, Box<Self>),               // Void
-    Continue,                                           // Void
-    Break,                                              // Void
+    Skip,                                                                 // Void
+    Block(Box<Spanned<Self>>),                                            // any
+    Ignore(Box<Spanned<Self>>),                                           // Void
+    Location(Cell<Pointer>, &'src str),                                   // Value
+    Constant(Value<'src>),                                                // Value
+    Unary(UnaryOp, Box<Spanned<Self>>),                                   // Value
+    Binary(BinaryOp, Box<Spanned<Self>>, Box<Spanned<Self>>),             // Value
+    Assign(Box<Spanned<Self>>, Box<Spanned<Self>>),                       // Void
+    Seq(Box<Spanned<Self>>, Box<Spanned<Self>>),                          // any
+    Let(Spanned<&'src str>, Box<Spanned<Self>>),                          // Void
+    VarScope(Spanned<&'src str>, Box<Spanned<Self>>, Box<Spanned<Self>>), // any
+    Function(Spanned<&'src str>, Rc<Function<'src>>),                     // Void
+    FunScope(Spanned<&'src str>, Rc<Function<'src>>, Box<Spanned<Self>>), // any
+    If(Box<Spanned<Self>>, Box<Spanned<Self>>, Box<Spanned<Self>>),       // any
+    Closure(Rc<Function<'src>>),                                          // Value
+    Call(Box<Spanned<Self>>, Vec<Spanned<Self>>),                         // Value
+    Return(Box<Spanned<Self>>),                                           // Void
+    While(Box<Spanned<Self>>, Box<Spanned<Self>>),                        // Void
+    For(Spanned<&'src str>, Box<Spanned<Self>>, Box<Spanned<Self>>),      // Void
+    Continue,                                                             // Void
+    Break,                                                                // Void
+}
+
+impl<'src> Default for Expr<'src> {
+    fn default() -> Self {
+        Expr::Skip
+    }
 }
 
 #[derive(Default)]
@@ -304,26 +345,23 @@ impl<'src> Environment<'src> {
 }
 
 impl<'src> Expr<'src> {
-    pub fn new_ignore(inner_expr: Self) -> Self {
-        if inner_expr.is_value() {
-            Expr::Ignore(Box::new(inner_expr))
+    pub fn new_ignore(inner_span: Spanned<Self>) -> Spanned<Self> {
+        if inner_span.is_value() {
+            let span = inner_span.span();
+            Spanned(Expr::Ignore(Box::new(inner_span)), span)
         } else {
-            inner_expr
+            inner_span
         }
     }
 
-    pub fn new_seq(first_expr: Self, second_expr: Self) -> Self {
-        match (first_expr, second_expr) {
-            (Expr::Let(var, val_expr), inner_expr) => {
-                Expr::VarScope(var, val_expr, Box::new(inner_expr))
-            }
-            (Expr::Function(name, func), inner_expr) => {
-                Expr::FunScope(name, func, Box::new(inner_expr))
-            }
-            (Expr::Skip, second_expr) => second_expr,
-            (first_expr, second_expr) => Expr::Seq(
-                Box::new(Self::new_ignore(first_expr)),
-                Box::new(second_expr),
+    pub fn new_seq(first_span: Spanned<Self>, second_span: Spanned<Self>) -> Self {
+        match first_span.0 {
+            Expr::Let(var, val_expr) => Expr::VarScope(var, val_expr, Box::new(second_span)),
+            Expr::Function(name, func) => Expr::FunScope(name, func, Box::new(second_span)),
+            Expr::Skip => second_span.0,
+            _ => Expr::Seq(
+                Box::new(Self::new_ignore(first_span)),
+                Box::new(second_span),
             ),
         }
     }
@@ -332,6 +370,7 @@ impl<'src> Expr<'src> {
         // TODO: maybe optimize
         match self {
             Expr::Skip => false,
+            Expr::Block(expr) => expr.is_value(),
             Expr::Ignore(_) => false,
             Expr::Location(_, _) => true,
             Expr::Constant(_) => true,
@@ -354,74 +393,77 @@ impl<'src> Expr<'src> {
         }
     }
 
-    fn walk<F: FnMut(&Self) -> bool>(&self, mut walker: F) -> F {
-        let cont = walker(self);
+    pub fn walk<F: FnMut(&Spanned<Self>) -> bool>(spanned_self: &Spanned<Self>, mut walker: F) -> F {
+        let cont = walker(spanned_self);
         if !cont {
             return walker;
         }
-        match self {
+        match &spanned_self.0 {
             Expr::Skip => {}
+            Expr::Block(expr) => {
+                walker = Self::walk(expr.as_ref(), walker);
+            }
             Expr::Ignore(expr) => {
-                walker = expr.walk(walker);
+                walker = Self::walk(expr.as_ref(), walker);
             }
             Expr::Location(_, _) => {}
             Expr::Constant(_) => {}
             Expr::Unary(_, arg_expr) => {
-                walker = arg_expr.walk(walker);
+                walker = Self::walk(arg_expr.as_ref(), walker);
             }
             Expr::Binary(_, left_expr, right_expr) => {
-                walker = left_expr.walk(walker);
-                walker = right_expr.walk(walker);
+                walker = Self::walk(left_expr.as_ref(), walker);
+                walker = Self::walk(right_expr.as_ref(), walker);
             }
             Expr::Assign(left_expr, right_expr) => {
-                walker = left_expr.walk(walker);
-                walker = right_expr.walk(walker);
+                walker = Self::walk(left_expr.as_ref(), walker);
+                walker = Self::walk(right_expr.as_ref(), walker);
             }
             Expr::Seq(first_expr, second_expr) => {
-                walker = first_expr.walk(walker);
-                walker = second_expr.walk(walker);
+                walker = Self::walk(first_expr.as_ref(), walker);
+                walker = Self::walk(second_expr.as_ref(), walker);
             }
             Expr::Let(_, expr) => {
-                walker = expr.walk(walker);
+                walker = Self::walk(expr.as_ref(), walker);
             }
             Expr::VarScope(_, val_expr, cont_expr) => {
-                walker = val_expr.walk(walker);
-                walker = cont_expr.walk(walker);
+                walker = Self::walk(val_expr.as_ref(), walker);
+                walker = Self::walk(cont_expr.as_ref(), walker);
             }
             Expr::Function(_, func) => {
                 let Function(_, body_expr) = func.deref();
-                walker = body_expr.walk(walker);
+                walker = Self::walk(body_expr.as_ref(), walker);
             }
             Expr::FunScope(_, func, cont_expr) => {
                 let Function(_, body_expr) = func.deref();
-                walker = body_expr.walk(walker);
-                walker = cont_expr.walk(walker);
+                walker = Self::walk(body_expr.as_ref(), walker);
+                walker = Self::walk(cont_expr.as_ref(), walker);
             }
             Expr::If(cond_expr, true_expr, false_expr) => {
-                walker = cond_expr.walk(walker);
-                walker = true_expr.walk(walker);
-                walker = false_expr.walk(walker);
+                walker = Self::walk(cond_expr.as_ref(), walker);
+                walker = Self::walk(true_expr.as_ref(), walker);
+                walker = Self::walk(false_expr.as_ref(), walker);
             }
             Expr::Closure(func) => {
                 let Function(_, body_expr) = func.deref();
-                walker = body_expr.walk(walker);
+                walker = Self::walk(body_expr.as_ref(), walker);
             }
             Expr::Call(callee_expr, arg_exprs) => {
-                walker = callee_expr.walk(walker);
+                walker = Self::walk(callee_expr.as_ref(), walker);
                 for arg_expr in arg_exprs.iter() {
-                    walker = arg_expr.walk(walker)
+                    walker = Self::walk(arg_expr, walker)
                 }
             }
             Expr::Return(expr) => {
-                walker = expr.walk(walker);
+                walker = Self::walk(expr.as_ref(), walker);
             }
             Expr::While(cond_expr, inner_expr) => {
-                walker = cond_expr.walk(walker);
-                walker = inner_expr.walk(walker);
+                walker = Self::walk(cond_expr.as_ref(), walker);
+                walker = Self::walk(inner_expr.as_ref(), walker);
             }
             Expr::For(_, iter_expr, inner_expr) => {
-                walker = iter_expr.walk(walker);
-                walker = inner_expr.walk(walker);
+                walker = Self::walk(iter_expr.as_ref(), walker);
+                walker = Self::walk(inner_expr.as_ref(), walker);
             }
             Expr::Continue => {}
             Expr::Break => {}
@@ -432,12 +474,13 @@ impl<'src> Expr<'src> {
     fn eval_impl(&self, env: &mut Environment<'src>) -> Flow<'src> {
         match self {
             Expr::Skip => Flow::Normal(Value::Void),
+            Expr::Block(expr) => expr.eval_impl(env),
             Expr::Ignore(expr) => expr.eval_impl(env).map(|_| Value::Void),
             Expr::Location(ptr, _) => env.get(ptr.get()).unwrap_or(Value::Void).to_flow(),
             Expr::Constant(val) => val.clone().to_flow(),
             Expr::Unary(op, arg_expr) => {
                 if *op == UnaryOp::Reference {
-                    if let Expr::Location(ptr, _) = arg_expr.as_ref() {
+                    if let Expr::Location(ptr, _) = arg_expr.as_ref().deref() {
                         return match ptr.get() {
                             Pointer::Function(i) => Value::Pointer(Pointer::Function(i)),
                             ptr => ptr
@@ -456,7 +499,7 @@ impl<'src> Expr<'src> {
                         Value::Pointer(i) => env.get(i).unwrap_or(Value::Void),
                         _ => Value::Void,
                     },
-                    UnaryOp::Reference => panic!("unreachable"),
+                    UnaryOp::Reference => unreachable!(),
                 })
             }
             Expr::Binary(op, left_expr, right_expr) => left_expr
@@ -473,18 +516,14 @@ impl<'src> Expr<'src> {
             Expr::Seq(first_expr, second_expr) => first_expr
                 .eval_impl(env)
                 .and_then(|_| second_expr.eval_impl(env)),
-            Expr::Let(_, _) => {
-                panic!("Expr::Let is an intermediate node and can't be present in final AST")
-            }
+            Expr::Let(_, _) => unreachable!(),
             Expr::VarScope(var, val_expr, cont_expr) => val_expr.eval_impl(env).and_then(|val| {
                 env.stack.push(var, val);
                 let res = cont_expr.eval_impl(env);
                 env.stack.pop();
                 res
             }),
-            Expr::Function(_, _) => {
-                panic!("Expr::Function is an intermediate node and can't be present in final AST")
-            }
+            Expr::Function(_, _) => unreachable!(),
             Expr::FunScope(_, _, cont_expr) => cont_expr.eval_impl(env),
             Expr::If(cond_expr, true_expr, false_expr) => {
                 cond_expr.eval_impl(env).and_then(|cond| {
@@ -571,11 +610,11 @@ impl<'src> Expr<'src> {
     }
 
     fn set_up_impl(
-        &self,
+        spanned_self: &Spanned<Self>,
         env: &mut Environment<'src>,
         sym_stack: &mut Vec<(&'src str, Option<usize>)>,
     ) {
-        let _ = self.walk(|expr| match expr {
+        let _ = Expr::walk(spanned_self, |expr| match &expr.0 {
             Expr::Location(ptr, var) => {
                 let opt = sym_stack
                     .iter()
@@ -594,17 +633,17 @@ impl<'src> Expr<'src> {
                 true
             }
             Expr::VarScope(var, val_expr, cont_expr) => {
-                val_expr.set_up_impl(env, sym_stack);
-                sym_stack.push((var, None));
-                env.stack.push(var, Value::Void);
-                cont_expr.set_up_impl(env, sym_stack);
+                Self::set_up_impl(val_expr.as_ref(), env, sym_stack);
+                sym_stack.push((var.0, None));
+                env.stack.push(var.0, Value::Void);
+                Self::set_up_impl(cont_expr.as_ref(), env, sym_stack);
                 env.stack.pop();
                 false
             }
             Expr::FunScope(name, func, cont_expr) => {
                 // disallow accessing variables outside of closure
                 let Function(arg_names, body_expr) = func.deref();
-                sym_stack.push((name, Some(env.functions.len())));
+                sym_stack.push((name.0, Some(env.functions.len())));
                 env.functions.push(func.clone());
                 let mut new_stack = Stack::new();
                 for arg_name in arg_names.iter() {
@@ -612,12 +651,12 @@ impl<'src> Expr<'src> {
                     sym_stack.push((arg_name, None));
                 }
                 mem::swap(&mut env.stack, &mut new_stack);
-                body_expr.set_up_impl(env, sym_stack);
+                Self::set_up_impl(body_expr.as_ref(), env, sym_stack);
                 mem::swap(&mut env.stack, &mut new_stack);
                 for _ in arg_names.iter() {
                     sym_stack.pop();
                 }
-                cont_expr.set_up_impl(env, sym_stack);
+                Self::set_up_impl(cont_expr.as_ref(), env, sym_stack);
                 sym_stack.pop();
                 false
             }
@@ -630,7 +669,7 @@ impl<'src> Expr<'src> {
                     sym_stack.push((arg_name, None));
                 }
                 mem::swap(&mut env.stack, &mut new_stack);
-                body_expr.set_up_impl(env, sym_stack);
+                Self::set_up_impl(body_expr.as_ref(), env, sym_stack);
                 mem::swap(&mut env.stack, &mut new_stack);
                 for _ in arg_names.iter() {
                     sym_stack.pop();
@@ -638,10 +677,10 @@ impl<'src> Expr<'src> {
                 false
             }
             Expr::For(var, iter_expr, inner_expr) => {
-                iter_expr.set_up_impl(env, sym_stack);
-                sym_stack.push((var, None));
-                env.stack.push(var, Value::Void);
-                inner_expr.set_up_impl(env, sym_stack);
+                Self::set_up_impl(iter_expr.as_ref(), env, sym_stack);
+                sym_stack.push((var.0, None));
+                env.stack.push(var.0, Value::Void);
+                Self::set_up_impl(inner_expr.as_ref(), env, sym_stack);
                 env.stack.pop();
                 false
             }
@@ -649,10 +688,10 @@ impl<'src> Expr<'src> {
         });
     }
 
-    pub fn set_up(&self) -> Environment<'src> {
-        let mut env = Environment::default();
+    pub fn set_up(spanned_self: &Spanned<Self>) -> Environment<'src> {
+        let mut env: Environment<'_> = Environment::default();
         let mut sym_stack: Vec<(&'src str, Option<usize>)> = Vec::new();
-        self.set_up_impl(&mut env, &mut sym_stack);
+        Self::set_up_impl(spanned_self, &mut env, &mut sym_stack);
         env
     }
 }

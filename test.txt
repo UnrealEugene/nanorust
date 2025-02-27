@@ -1,6 +1,5 @@
 let f = |a, b| a..=b;
 let x = 0;
 for i in f(1, 10) {
-    x = x + i;
+    x = x + ;
 }
-x
