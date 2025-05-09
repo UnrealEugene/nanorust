@@ -4,7 +4,7 @@ use crate::{
     expr::*,
     lexer::Token,
     span::{span_wrap, Spanned},
-    typing::{BuiltinType, Polytype, Type},
+    typing::{BuiltinType, Polytype, Type}, value::{BinaryOp, Function, Pointer, UnaryOp, Value},
 };
 use alloc::{boxed::Box, rc::Rc, vec::Vec};
 use chumsky::{input::ValueInput, prelude::*};
@@ -107,6 +107,14 @@ impl BuiltinType {
         }
         .map(Type::Builtin)
     }
+}
+
+pub type Identifier<'src> = Spanned<&'src str>;
+
+#[derive(Debug)]
+pub struct Variable<'src, T = Type<'src>> {
+    pub name: Identifier<'src>,
+    pub ty: RefCell<T>,
 }
 
 pub fn parse_stmt<'src, I>() -> impl Parser<'src, I, Spanned<Expr<'src>>, ParseError<'src>>

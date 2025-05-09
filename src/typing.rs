@@ -11,10 +11,9 @@ use alloc::{format, vec};
 use hashbrown::{HashMap, HashSet};
 use hex_coding_macros::ty;
 
-use crate::{
-    expr::{Expr, Identifier, Value},
-    span::Spanned,
-};
+use crate::parser::Identifier;
+use crate::value::Value;
+use crate::{expr::Expr, span::Spanned};
 
 pub type Result<T> = result::Result<T, TypeError>;
 
@@ -738,7 +737,12 @@ impl<'src> TypeEnv<'src> {
                 // TODO: support functions
                 let let_ty = self
                     .stack
-                    .get(ptr.get().0.to_absolute_sym(self.stack.len()).unwrap_absolute())
+                    .get(
+                        ptr.get()
+                            .0
+                            .to_absolute_sym(self.stack.len())
+                            .unwrap_absolute(),
+                    )
                     .unwrap();
                 Ok((
                     Subst::new(),
