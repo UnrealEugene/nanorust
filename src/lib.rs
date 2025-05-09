@@ -3,8 +3,12 @@
 
 extern crate alloc;
 extern crate core;
+extern crate hex_coding_macros;
+
+extern crate self as hex_coding;
 
 pub mod span;
 pub mod lexer;
 pub mod parser;
 pub mod expr;
+pub mod typing;

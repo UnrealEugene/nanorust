@@ -1,5 +1,11 @@
-let f = |a, b| a..=b;
-let x = 0;
-for i in f(1, 10) {
-    x = x + ;
-}
+let mut x = 1;
+let f = || {
+    let g = || {
+        x = 2;
+    };
+    let a = 4;
+    g
+};
+let b = 6;
+f()();
+x

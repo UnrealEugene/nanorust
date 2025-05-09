@@ -2,7 +2,7 @@ use std::path::Path;
 
 use ariadne::{sources, Color, Label, Report, ReportKind};
 use chumsky::prelude::*;
-use hex_coding::{expr::Expr, lexer::lexer, parser::*};
+use hex_coding::{expr::Expr, lexer::lexer, parser::*, typing::TypeEnv};
 
 #[test]
 fn test_file() {
@@ -25,7 +25,17 @@ fn test_file() {
 
         if let Some(ast) = ast.filter(|_| errs.len() + parse_errs.len() == 0) {
             let env = Expr::set_up(&ast);
-            println!("Return value: {:?}", ast.eval(env));
+
+            let type_env = TypeEnv::new();
+            let type_result = type_env.infer_type(&ast);
+
+            if type_result.is_err() {
+                println!("Type check error: {}", type_result.unwrap_err());
+                return;
+            }
+            println!("Type: {}", type_env.generalize(&type_result.unwrap_or_default()));
+            println!("AST: {:#?}", ast);
+            println!("Return value: {:?}", ast.0.eval(env));
         }
 
         parse_errs
@@ -34,7 +44,7 @@ fn test_file() {
     };
 
     errs.into_iter()
-        .map(|e| e.map_token(|c| c.to_string()))
+        .map(|e: Rich<'_, char>| e.map_token(|c| c.to_string()))
         .chain(
             parse_errs
                 .into_iter()

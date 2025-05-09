@@ -1,21 +1,46 @@
 use core::{
     borrow::Borrow,
-    cell::Cell,
+    cell::{Cell, RefCell},
     iter::zip,
-    mem,
     ops::{Deref, Range, RangeInclusive},
 };
 
-use alloc::{boxed::Box, rc::Rc, vec::Vec};
+use alloc::{
+    boxed::Box,
+    rc::Rc,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+use hashbrown::HashMap;
 
-use crate::span::Spanned;
+use crate::{
+    span::Spanned,
+    typing::{Polytype, Type},
+};
+
+use hex_coding_macros::ty;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
     Negate,
     LogicNot,
-    Reference,
-    Dereference,
+}
+
+impl UnaryOp {
+    pub fn calc<'src>(&self, arg: Value<'src>) -> Value<'src> {
+        match self {
+            UnaryOp::Negate => Value::Number(arg.unwrap_number().wrapping_neg()),
+            UnaryOp::LogicNot => Value::Boolean(!arg.unwrap_boolean()),
+        }
+    }
+
+    pub fn get_type(&self) -> Polytype<'static> {
+        match self {
+            UnaryOp::Negate => ty!("fn(i32) -> i32"),
+            UnaryOp::LogicNot => ty!("fn(bool) -> bool"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -69,42 +94,91 @@ impl BinaryOp {
 
     pub fn calc<'src>(&self, a: Value<'src>, b: Value<'src>) -> Value<'src> {
         match self {
-            Self::Add => Self::calc_num_to_num(a, b, i32::wrapping_add),
-            Self::Subtract => Self::calc_num_to_num(a, b, i32::wrapping_sub),
-            Self::Multiply => Self::calc_num_to_num(a, b, i32::wrapping_mul),
-            Self::Divide => Self::calc_num_to_num(a, b, i32::wrapping_div),
-            Self::Modulo => Self::calc_num_to_num(a, b, i32::wrapping_rem),
-            Self::Equal => Self::calc_num_to_bool(a, b, i32::eq),
-            Self::NotEqual => Self::calc_num_to_bool(a, b, i32::ne),
-            Self::LessEqual => Self::calc_num_to_bool(a, b, i32::le),
-            Self::GreaterEqual => Self::calc_num_to_bool(a, b, i32::ge),
-            Self::Less => Self::calc_num_to_bool(a, b, i32::lt),
-            Self::Greater => Self::calc_num_to_bool(a, b, i32::gt),
-            Self::LogicOr => Self::calc_bool_to_bool(a, b, |a, b| a || b),
-            Self::LogicAnd => Self::calc_bool_to_bool(a, b, |a, b| a && b),
-            Self::Range => Self::calc_num_to_any(a, b, |a, b| a..b, Value::Range),
-            Self::RangeInclusive => {
+            BinaryOp::Add => Self::calc_num_to_num(a, b, i32::wrapping_add),
+            BinaryOp::Subtract => Self::calc_num_to_num(a, b, i32::wrapping_sub),
+            BinaryOp::Multiply => Self::calc_num_to_num(a, b, i32::wrapping_mul),
+            BinaryOp::Divide => Self::calc_num_to_num(a, b, i32::wrapping_div),
+            BinaryOp::Modulo => Self::calc_num_to_num(a, b, i32::wrapping_rem),
+            BinaryOp::Equal => Self::calc_num_to_bool(a, b, i32::eq),
+            BinaryOp::NotEqual => Self::calc_num_to_bool(a, b, i32::ne),
+            BinaryOp::LessEqual => Self::calc_num_to_bool(a, b, i32::le),
+            BinaryOp::GreaterEqual => Self::calc_num_to_bool(a, b, i32::ge),
+            BinaryOp::Less => Self::calc_num_to_bool(a, b, i32::lt),
+            BinaryOp::Greater => Self::calc_num_to_bool(a, b, i32::gt),
+            BinaryOp::LogicOr => Self::calc_bool_to_bool(a, b, |a, b| a || b),
+            BinaryOp::LogicAnd => Self::calc_bool_to_bool(a, b, |a, b| a && b),
+            BinaryOp::Range => Self::calc_num_to_any(a, b, |a, b| a..b, Value::Range),
+            BinaryOp::RangeInclusive => {
                 Self::calc_num_to_any(a, b, |a, b| a..=b, Value::RangeInclusive)
             }
+        }
+    }
+
+    pub fn get_type(&self) -> Polytype<'static> {
+        match self {
+            BinaryOp::Add => ty!("fn(i32, i32) -> i32"),
+            BinaryOp::Subtract => ty!("fn(i32, i32) -> i32"),
+            BinaryOp::Multiply => ty!("fn(i32, i32) -> i32"),
+            BinaryOp::Divide => ty!("fn(i32, i32) -> i32"),
+            BinaryOp::Modulo => ty!("fn(i32, i32) -> i32"),
+            BinaryOp::Equal => ty!("fn('0, '0) -> bool"),
+            BinaryOp::NotEqual => ty!("fn('0, '0) -> bool"),
+            BinaryOp::LessEqual => ty!("fn(i32, i32) -> bool"),
+            BinaryOp::GreaterEqual => ty!("fn(i32, i32) -> bool"),
+            BinaryOp::Less => ty!("fn(i32, i32) -> bool"),
+            BinaryOp::Greater => ty!("fn(i32, i32) -> bool"),
+            BinaryOp::LogicOr => ty!("fn(bool, bool) -> bool"),
+            BinaryOp::LogicAnd => ty!("fn(bool, bool) -> bool"),
+            BinaryOp::Range => ty!("fn(i32, i32) -> range"),
+            BinaryOp::RangeInclusive => ty!("fn(i32, i32) -> range"),
         }
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum Pointer {
+pub enum Pointer<'src> {
     Relative(usize),
     Absolute(usize),
     Function(usize),
+    Capture(usize, usize, &'src str),
     Invalid,
 }
 
-impl Pointer {
-    fn to_absolute(self, stack: &Stack) -> Option<usize> {
+impl<'src> Pointer<'src> {
+    pub fn to_absolute(self, stack: &Stack<'src>) -> Self {
         match self {
-            Pointer::Relative(i) => Some(stack.0.len() - i - 1),
-            Pointer::Absolute(i) => Some(i),
-            Pointer::Function(_) => None,
-            Pointer::Invalid => None,
+            Pointer::Relative(i) => Pointer::Absolute(stack.len() - i - 1),
+            Pointer::Absolute(_) => self,
+            Pointer::Function(_) => self,
+            Pointer::Capture(i, _, var) => *stack
+                .get_relative(i)
+                .unwrap()
+                .unwrap_closure_ref()
+                .1
+                .get(var)
+                .unwrap(),
+            Pointer::Invalid => unreachable!(),
+        }
+    }
+
+    pub fn to_absolute_sym(self, stack_len: usize) -> Self {
+        match self {
+            Pointer::Relative(i) => Pointer::Absolute(stack_len - i - 1),
+            Pointer::Absolute(_) => self,
+            Pointer::Function(_) => self,
+            Pointer::Capture(_, i, _) => Pointer::Absolute(stack_len - i - 1),
+            Pointer::Invalid => unreachable!(),
+        }
+    }
+
+    pub fn to_lvalue(self) -> CValue<'src> {
+        CValue::LValue(self)
+    }
+
+    pub fn unwrap_absolute(self) -> usize {
+        match self {
+            Pointer::Absolute(i) => i,
+            _ => panic!("unwrap of non-absolute pointer {:?}", self),
         }
     }
 }
@@ -113,17 +187,17 @@ impl Pointer {
 pub enum Value<'src> {
     Number(i32),
     Boolean(bool),
+    Tuple(Vec<Value<'src>>),
     Range(Range<i32>),
     RangeInclusive(RangeInclusive<i32>),
-    Pointer(Pointer),
+    Pointer(Pointer<'src>),
     Function(usize),
-    Closure(Rc<Function<'src>>),
-    Void,
+    Closure(Rc<Function<'src>>, HashMap<String, Pointer<'src>>),
 }
 
 impl<'src> Default for Value<'src> {
     fn default() -> Self {
-        Value::Void
+        Value::Tuple(Vec::new())
     }
 }
 
@@ -150,27 +224,81 @@ impl<'src> Value<'src> {
         }
     }
 
-    fn unwrap_pointer(self) -> Pointer {
+    fn to_function(self, env: &Environment<'src>) -> Rc<Function<'src>> {
         match self {
-            Value::Pointer(ptr) => ptr,
-            _ => panic!("unwrap of non-pointer value {:?}", self),
+            Value::Function(i) => env.functions.get(i).unwrap().clone(),
+            Value::Closure(func, _) => func,
+            _ => panic!("unwrap of non-functional value {:?}", self),
         }
     }
 
-    fn unwrap_function(self, env: &Environment<'src>) -> Rc<Function<'src>> {
-        match self {
-            Value::Function(i) => env.functions.get(i).unwrap().clone(),
-            Value::Closure(func) => func,
-            _ => panic!("unwrap of non-function value {:?}", self),
+    fn unwrap_closure_ref(&self) -> (Rc<Function<'src>>, &HashMap<String, Pointer<'src>>) {
+        match &self {
+            Value::Closure(func, captures) => (func.clone(), captures),
+            _ => panic!("unwrap of non-closure value {:?}", self),
         }
     }
 
     fn to_flow(self) -> Flow<'src> {
-        Flow::Normal(self)
+        Flow::Normal(CValue::RValue(self))
+    }
+
+    fn init_closure_captures(
+        captures: &RefCell<HashMap<String, Pointer<'src>>>,
+        stack: &Stack<'src>,
+    ) -> HashMap<String, Pointer<'src>> {
+        let mut res = HashMap::new();
+        captures.borrow().iter().for_each(|(var, ptr)| {
+            res.insert(var.clone(), ptr.to_absolute(stack));
+        });
+        res
     }
 }
 
-enum Flow<'src, R = Value<'src>> {
+#[derive(Debug, Clone)]
+pub enum CValue<'src> {
+    LValue(Pointer<'src>),
+    RValue(Value<'src>),
+}
+
+impl<'src> Default for CValue<'src> {
+    fn default() -> Self {
+        Self::RValue(Value::default())
+    }
+}
+
+impl<'src> CValue<'src> {
+    pub fn to_rvalue(self, env: &Environment<'src>) -> Self {
+        match self {
+            CValue::LValue(ptr) => CValue::RValue(env.stack.get(ptr).unwrap().clone()),
+            CValue::RValue(_) => self,
+        }
+    }
+
+    pub fn to_flow(self) -> Flow<'src> {
+        Flow::Normal(self)
+    }
+
+    pub fn unwrap_lvalue(self) -> Pointer<'src> {
+        match self {
+            CValue::LValue(ptr) => ptr,
+            CValue::RValue(_) => panic!("unwrap of non rvalue value"),
+        }
+    }
+
+    pub fn unwrap_rvalue(self) -> Value<'src> {
+        match self {
+            CValue::LValue(_) => panic!("unwrap of non rvalue value"),
+            CValue::RValue(val) => val,
+        }
+    }
+
+    pub fn unwrap(self, env: &Environment<'src>) -> Value<'src> {
+        self.to_rvalue(env).unwrap_rvalue()
+    }
+}
+
+pub enum Flow<'src, R = CValue<'src>> {
     Normal(R),
     Return(Value<'src>),
     Continue,
@@ -218,42 +346,106 @@ impl<'src, T> Flow<'src, T> {
 }
 
 impl<'src> Flow<'src> {
-    fn to_value(self) -> Value<'src> {
+    fn to_value(self) -> CValue<'src> {
         match self {
             Flow::Normal(val) => val,
-            Flow::Return(val) => val,
-            Flow::Continue => Value::Void,
-            Flow::Break => Value::Void,
+            Flow::Return(val) => CValue::RValue(val),
+            Flow::Continue => CValue::default(),
+            Flow::Break => CValue::default(),
+        }
+    }
+}
+
+pub type Identifier<'src> = Spanned<&'src str>;
+
+#[derive(Debug)]
+pub struct Variable<'src, T = Type<'src>> {
+    pub name: Identifier<'src>,
+    pub ty: RefCell<T>,
+}
+
+#[derive(Debug)]
+pub struct Function<'src> {
+    pub args: Vec<Identifier<'src>>,
+    pub body: Box<Spanned<Expr<'src>>>,
+    pub ty: RefCell<Polytype<'src>>,
+}
+
+impl<'src> Function<'src> {
+    pub fn new(vars: Vec<Variable<'src>>, ret_type: Type<'src>, body: Spanned<Expr<'src>>) -> Self {
+        let (var_names, var_types) = vars
+            .into_iter()
+            .map(|var| (var.name, var.ty.into_inner()))
+            .unzip();
+        Function {
+            args: var_names,
+            body: Box::new(body),
+            ty: RefCell::new(Polytype::from_unknown(Type::Function(
+                var_types,
+                Box::new(ret_type),
+            ))),
         }
     }
 }
 
 #[derive(Debug)]
-pub struct Function<'src>(pub Vec<Spanned<&'src str>>, pub Box<Spanned<Expr<'src>>>);
-
-#[derive(Debug)]
 pub enum Expr<'src> {
-    Skip,                                                                 // Void
-    Block(Box<Spanned<Self>>),                                            // any
-    Ignore(Box<Spanned<Self>>),                                           // Void
-    Location(Cell<Pointer>, &'src str),                                   // Value
-    Constant(Value<'src>),                                                // Value
-    Unary(UnaryOp, Box<Spanned<Self>>),                                   // Value
-    Binary(BinaryOp, Box<Spanned<Self>>, Box<Spanned<Self>>),             // Value
-    Assign(Box<Spanned<Self>>, Box<Spanned<Self>>),                       // Void
-    Seq(Box<Spanned<Self>>, Box<Spanned<Self>>),                          // any
-    Let(Spanned<&'src str>, Box<Spanned<Self>>),                          // Void
-    VarScope(Spanned<&'src str>, Box<Spanned<Self>>, Box<Spanned<Self>>), // any
-    Function(Spanned<&'src str>, Rc<Function<'src>>),                     // Void
-    FunScope(Spanned<&'src str>, Rc<Function<'src>>, Box<Spanned<Self>>), // any
-    If(Box<Spanned<Self>>, Box<Spanned<Self>>, Box<Spanned<Self>>),       // any
-    Closure(Rc<Function<'src>>),                                          // Value
-    Call(Box<Spanned<Self>>, Vec<Spanned<Self>>),                         // Value
-    Return(Box<Spanned<Self>>),                                           // Void
-    While(Box<Spanned<Self>>, Box<Spanned<Self>>),                        // Void
-    For(Spanned<&'src str>, Box<Spanned<Self>>, Box<Spanned<Self>>),      // Void
-    Continue,                                                             // Void
-    Break,                                                                // Void
+    Error,
+    Skip,                                              // Void
+    Block(Box<Spanned<Self>>),                         // any
+    Ignore(Box<Spanned<Self>>),                        // Void
+    Location(Cell<(Pointer<'src>, usize)>, &'src str), // Value
+    Constant(Value<'src>),                             // Value
+    Tuple(Vec<Spanned<Self>>),                         // Value
+    Reference {
+        is_mut: bool,
+        expr: Box<Spanned<Self>>,
+    }, // Value
+    Dereference {
+        is_mut: bool,
+        expr: Box<Spanned<Self>>,
+    }, // Value
+    Unary(UnaryOp, Box<Spanned<Self>>),                // Value
+    Binary(BinaryOp, Box<Spanned<Self>>, Box<Spanned<Self>>), // Value
+    Assign(Box<Spanned<Self>>, Box<Spanned<Self>>),    // Void
+    Seq(Box<Spanned<Self>>, Box<Spanned<Self>>),       // any
+    Let {
+        var: Variable<'src, Polytype<'src>>,
+        is_mut: bool,
+        val: Box<Spanned<Self>>,
+    }, // Void
+    VarScope {
+        var: Variable<'src, Polytype<'src>>,
+        is_mut: bool,
+        val: Box<Spanned<Self>>,
+        cont: Box<Spanned<Self>>,
+    }, // any
+    Function {
+        name: Identifier<'src>,
+        func: Rc<Function<'src>>,
+    }, // Void
+    FunScope {
+        name: Identifier<'src>,
+        func: Rc<Function<'src>>,
+        cont: Box<Spanned<Self>>,
+    }, // any
+    Cast(Box<Spanned<Self>>, Polytype<'src>),          // Value
+    If {
+        cond: Box<Spanned<Self>>,
+        if_false: Box<Spanned<Self>>,
+        if_true: Box<Spanned<Self>>,
+    }, // any
+    Closure(Rc<Function<'src>>, RefCell<HashMap<String, Pointer<'src>>>), // Value
+    Call(Box<Spanned<Self>>, Vec<Spanned<Self>>),      // Value
+    Return(Box<Spanned<Self>>),                        // Void
+    While(Box<Spanned<Self>>, Box<Spanned<Self>>),     // Void
+    For {
+        var: Variable<'src>,
+        iter: Box<Spanned<Self>>,
+        body: Box<Spanned<Self>>,
+    }, // Void
+    Continue,                                          // Void
+    Break,                                             // Void
 }
 
 impl<'src> Default for Expr<'src> {
@@ -263,7 +455,7 @@ impl<'src> Default for Expr<'src> {
 }
 
 #[derive(Default)]
-struct Stack<'src>(Vec<(&'src str, Value<'src>)>);
+pub struct Stack<'src>(Vec<(&'src str, Value<'src>)>);
 
 #[derive(Default)]
 pub struct Environment<'src> {
@@ -276,9 +468,13 @@ impl<'src> Stack<'src> {
         Self::default()
     }
 
-    fn get(&self, ptr: Pointer) -> Option<&Value<'src>> {
-        let index_opt = ptr.to_absolute(&self);
-        index_opt.and_then(|i| self.0.get(i)).map(|e| &e.1)
+    fn get_relative(&self, i: usize) -> Option<&Value<'src>> {
+        self.0.get(self.len() - i - 1).map(|e| &e.1)
+    }
+
+    fn get(&self, ptr: Pointer<'src>) -> Option<&Value<'src>> {
+        let index = ptr.to_absolute(&self).unwrap_absolute();
+        self.0.get(index).map(|e| &e.1)
     }
 
     fn index<Q>(&self, k: &Q) -> Option<usize>
@@ -286,12 +482,16 @@ impl<'src> Stack<'src> {
         &'src str: Borrow<Q>,
         Q: Eq + ?Sized,
     {
-        self.0.iter().rev().position(|(var, _)| var.borrow() == k)
+        self.0
+            .iter()
+            .rev()
+            .position(|(var, _)| var.borrow() == k)
+            .map(|i| self.0.len() - i - 1)
     }
 
-    fn assign(&mut self, ptr: Pointer, v: Value<'src>) {
-        let index_opt = ptr.to_absolute(&self);
-        index_opt.and_then(|i| self.0.get_mut(i)).map(|e| e.1 = v);
+    fn assign(&mut self, ptr: Pointer<'src>, v: Value<'src>) {
+        let index = ptr.to_absolute(&self).unwrap_absolute();
+        self.0.get_mut(index).map(|e| e.1 = v);
     }
 
     fn push(&mut self, k: &'src str, v: Value<'src>) {
@@ -301,10 +501,14 @@ impl<'src> Stack<'src> {
     fn pop(&mut self) -> Option<(&'src str, Value<'src>)> {
         self.0.pop()
     }
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
 }
 
 impl<'src> Environment<'src> {
-    fn get(&self, ptr: Pointer) -> Option<Value<'src>> {
+    fn get(&self, ptr: Pointer<'src>) -> Option<Value<'src>> {
         self.stack.get(ptr).cloned().or_else(|| match ptr {
             Pointer::Function(i) => Some(Value::Function(i)),
             _ => None,
@@ -312,20 +516,81 @@ impl<'src> Environment<'src> {
     }
 }
 
+struct SymStack<'src>(Vec<Vec<(&'src str, Option<usize>, bool)>>);
+
+impl<'src> SymStack<'src> {
+    fn new() -> Self {
+        SymStack(vec![Vec::new()])
+    }
+
+    fn push(&mut self, var: &'src str, func_ind: Option<usize>, is_mut: bool) {
+        self.0.last_mut().unwrap().push((var, func_ind, is_mut))
+    }
+
+    fn push_closure(&mut self) {
+        self.0.push(Vec::new());
+    }
+
+    fn pop(&mut self) {
+        self.0.last_mut().unwrap().pop();
+    }
+
+    fn pop_closure(&mut self) {
+        self.0.pop();
+    }
+
+    fn depth(&self) -> usize {
+        self.0.len() - 1
+    }
+
+    fn closure_stack_size(&self, depth: usize) -> usize {
+        self.0[depth].len()
+    }
+
+    fn find_var(&self, var: &'src str) -> Option<(usize, Option<usize>, bool, usize)> {
+        let mut ind = 0;
+        for (i, inner) in self.0.iter().enumerate().rev() {
+            for (var2, func_ind, is_mut) in inner.iter().rev() {
+                if var == *var2 {
+                    return Some((ind, *func_ind, *is_mut, i));
+                }
+                ind += 1;
+            }
+        }
+        None
+    }
+
+    fn index_at_depth(&self, var: &'src str, depth: usize) -> Option<usize> {
+        self.0[depth]
+            .iter()
+            .rev()
+            .position(|(var2, _, _)| var == *var2)
+    }
+}
+
 impl<'src> Expr<'src> {
     pub fn new_ignore(inner_span: Spanned<Self>) -> Spanned<Self> {
-        if inner_span.is_value() {
+        if inner_span.0.is_unit() {
+            inner_span
+        } else {
             let span = inner_span.span();
             Spanned(Expr::Ignore(Box::new(inner_span)), span)
-        } else {
-            inner_span
         }
     }
 
     pub fn new_seq(first_span: Spanned<Self>, second_span: Spanned<Self>) -> Self {
         match first_span.0 {
-            Expr::Let(var, val_expr) => Expr::VarScope(var, val_expr, Box::new(second_span)),
-            Expr::Function(name, func) => Expr::FunScope(name, func, Box::new(second_span)),
+            Expr::Let { var, is_mut, val } => Expr::VarScope {
+                var,
+                is_mut,
+                val,
+                cont: Box::new(second_span),
+            },
+            Expr::Function { name, func } => Expr::FunScope {
+                name,
+                func,
+                cont: Box::new(second_span),
+            },
             Expr::Skip => second_span.0,
             _ => Expr::Seq(
                 Box::new(Self::new_ignore(first_span)),
@@ -334,39 +599,49 @@ impl<'src> Expr<'src> {
         }
     }
 
-    fn is_value(&self) -> bool {
+    /// Returns true if expression is guaranteed to have a unit type.
+    fn is_unit(&self) -> bool {
         // TODO: maybe optimize
         match self {
-            Expr::Skip => false,
-            Expr::Block(expr) => expr.is_value(),
-            Expr::Ignore(_) => false,
-            Expr::Location(_, _) => true,
-            Expr::Constant(_) => true,
-            Expr::Unary(_, _) => true,
-            Expr::Binary(_, _, _) => true,
-            Expr::Assign(_, _) => false,
-            Expr::Seq(_, second_expr) => second_expr.is_value(),
-            Expr::Let(_, _) => false,
-            Expr::VarScope(_, _, cont_expr) => cont_expr.is_value(),
-            Expr::Function(_, _) => false,
-            Expr::FunScope(_, _, cont_expr) => cont_expr.is_value(),
-            Expr::If(_, _, false_expr) => false_expr.is_value(),
-            Expr::Closure(_) => true,
-            Expr::Call(_, _) => true,
-            Expr::Return(_) => false,
-            Expr::While(_, _) => false,
-            Expr::For(_, _, _) => false,
-            Expr::Continue => false,
-            Expr::Break => false,
+            Expr::Error => true,
+            Expr::Skip => true,
+            Expr::Block(inner) => inner.0.is_unit(),
+            Expr::Ignore(..) => true,
+            Expr::Location(..) => false, // can't decide solely from AST
+            Expr::Constant(..) => false,
+            Expr::Tuple(..) => false,
+            Expr::Reference { .. } => false,
+            Expr::Dereference { .. } => false,
+            Expr::Unary(..) => false,
+            Expr::Binary(..) => false,
+            Expr::Assign(..) => true,
+            Expr::Seq(.., second) => second.0.is_unit(),
+            Expr::Let { .. } => true,
+            Expr::VarScope { cont, .. } => cont.0.is_unit(),
+            Expr::Function { .. } => true,
+            Expr::FunScope { cont, .. } => cont.0.is_unit(),
+            Expr::Cast(..) => false,
+            Expr::If { if_false, .. } => if_false.0.is_unit(),
+            Expr::Closure(..) => false,
+            Expr::Call(..) => false, // can't decide solely from AST
+            Expr::Return(..) => true,
+            Expr::While(..) => true,
+            Expr::For { .. } => true,
+            Expr::Continue => true,
+            Expr::Break => true,
         }
     }
 
-    pub fn walk<F: FnMut(&Spanned<Self>) -> bool>(spanned_self: &Spanned<Self>, mut walker: F) -> F {
+    pub fn walk<'a, F: FnMut(&'a Spanned<Self>) -> bool>(
+        spanned_self: &'a Spanned<Self>,
+        mut walker: F,
+    ) -> F {
         let cont = walker(spanned_self);
         if !cont {
             return walker;
         }
         match &spanned_self.0 {
+            Expr::Error => {}
             Expr::Skip => {}
             Expr::Block(expr) => {
                 walker = Self::walk(expr.as_ref(), walker);
@@ -374,64 +649,82 @@ impl<'src> Expr<'src> {
             Expr::Ignore(expr) => {
                 walker = Self::walk(expr.as_ref(), walker);
             }
-            Expr::Location(_, _) => {}
-            Expr::Constant(_) => {}
-            Expr::Unary(_, arg_expr) => {
-                walker = Self::walk(arg_expr.as_ref(), walker);
+            Expr::Location(..) => {}
+            Expr::Constant(..) => {}
+            Expr::Tuple(elems) => {
+                for elem in elems.iter() {
+                    walker = Self::walk(elem, walker)
+                }
             }
-            Expr::Binary(_, left_expr, right_expr) => {
-                walker = Self::walk(left_expr.as_ref(), walker);
-                walker = Self::walk(right_expr.as_ref(), walker);
-            }
-            Expr::Assign(left_expr, right_expr) => {
-                walker = Self::walk(left_expr.as_ref(), walker);
-                walker = Self::walk(right_expr.as_ref(), walker);
-            }
-            Expr::Seq(first_expr, second_expr) => {
-                walker = Self::walk(first_expr.as_ref(), walker);
-                walker = Self::walk(second_expr.as_ref(), walker);
-            }
-            Expr::Let(_, expr) => {
+            Expr::Reference { is_mut: _, expr } => {
                 walker = Self::walk(expr.as_ref(), walker);
             }
-            Expr::VarScope(_, val_expr, cont_expr) => {
-                walker = Self::walk(val_expr.as_ref(), walker);
-                walker = Self::walk(cont_expr.as_ref(), walker);
+            Expr::Dereference { is_mut: _, expr } => {
+                walker = Self::walk(expr.as_ref(), walker);
             }
-            Expr::Function(_, func) => {
-                let Function(_, body_expr) = func.deref();
-                walker = Self::walk(body_expr.as_ref(), walker);
+            Expr::Unary(_, arg) => {
+                walker = Self::walk(arg.as_ref(), walker);
             }
-            Expr::FunScope(_, func, cont_expr) => {
-                let Function(_, body_expr) = func.deref();
-                walker = Self::walk(body_expr.as_ref(), walker);
-                walker = Self::walk(cont_expr.as_ref(), walker);
+            Expr::Binary(_, left, right) => {
+                walker = Self::walk(left.as_ref(), walker);
+                walker = Self::walk(right.as_ref(), walker);
             }
-            Expr::If(cond_expr, true_expr, false_expr) => {
-                walker = Self::walk(cond_expr.as_ref(), walker);
-                walker = Self::walk(true_expr.as_ref(), walker);
-                walker = Self::walk(false_expr.as_ref(), walker);
+            Expr::Assign(left, right) => {
+                walker = Self::walk(left.as_ref(), walker);
+                walker = Self::walk(right.as_ref(), walker);
             }
-            Expr::Closure(func) => {
-                let Function(_, body_expr) = func.deref();
-                walker = Self::walk(body_expr.as_ref(), walker);
+            Expr::Seq(first, second) => {
+                walker = Self::walk(first.as_ref(), walker);
+                walker = Self::walk(second.as_ref(), walker);
             }
-            Expr::Call(callee_expr, arg_exprs) => {
-                walker = Self::walk(callee_expr.as_ref(), walker);
-                for arg_expr in arg_exprs.iter() {
-                    walker = Self::walk(arg_expr, walker)
+            Expr::Let { val, .. } => {
+                walker = Self::walk(val.as_ref(), walker);
+            }
+            Expr::VarScope { val, cont, .. } => {
+                walker = Self::walk(val.as_ref(), walker);
+                walker = Self::walk(cont.as_ref(), walker);
+            }
+            Expr::Function { func, .. } => {
+                let Function { body, .. } = func.deref();
+                walker = Self::walk(body.as_ref(), walker);
+            }
+            Expr::FunScope { func, cont, .. } => {
+                let Function { body, .. } = func.deref();
+                walker = Self::walk(body.as_ref(), walker);
+                walker = Self::walk(cont.as_ref(), walker);
+            }
+            Expr::Cast(arg, _) => {
+                walker = Self::walk(arg.as_ref(), walker);
+            }
+            Expr::If {
+                cond,
+                if_true,
+                if_false,
+            } => {
+                walker = Self::walk(cond.as_ref(), walker);
+                walker = Self::walk(if_true.as_ref(), walker);
+                walker = Self::walk(if_false.as_ref(), walker);
+            }
+            Expr::Closure(func, _) => {
+                let Function { body, .. } = func.deref();
+                walker = Self::walk(body.as_ref(), walker);
+            }
+            Expr::Call(callee, args) => {
+                walker = Self::walk(callee.as_ref(), walker);
+                for arg in args.iter() {
+                    walker = Self::walk(arg, walker)
                 }
             }
             Expr::Return(expr) => {
                 walker = Self::walk(expr.as_ref(), walker);
             }
-            Expr::While(cond_expr, inner_expr) => {
-                walker = Self::walk(cond_expr.as_ref(), walker);
-                walker = Self::walk(inner_expr.as_ref(), walker);
+            Expr::While(cond, inner) => {
+                walker = Self::walk(cond.as_ref(), walker);
+                walker = Self::walk(inner.as_ref(), walker);
             }
-            Expr::For(_, iter_expr, inner_expr) => {
-                walker = Self::walk(iter_expr.as_ref(), walker);
-                walker = Self::walk(inner_expr.as_ref(), walker);
+            Expr::For { iter, body, .. } => {
+                walker = Self::walk(iter.as_ref(), walker);
+                walker = Self::walk(body.as_ref(), walker);
             }
             Expr::Continue => {}
             Expr::Break => {}
@@ -441,118 +734,153 @@ impl<'src> Expr<'src> {
 
     fn eval_impl(&self, env: &mut Environment<'src>) -> Flow<'src> {
         match self {
-            Expr::Skip => Flow::Normal(Value::Void),
-            Expr::Block(expr) => expr.eval_impl(env),
-            Expr::Ignore(expr) => expr.eval_impl(env).map(|_| Value::Void),
-            Expr::Location(ptr, _) => env.get(ptr.get()).unwrap_or(Value::Void).to_flow(),
+            Expr::Error => panic!("attempt to evaluate erroneous AST"),
+            Expr::Skip => Flow::default(),
+            Expr::Block(expr) => expr.0.eval_impl(env).map(|val| val.to_rvalue(env)),
+            Expr::Ignore(expr) => expr.0.eval_impl(env).map(|_| CValue::default()),
+            Expr::Location(ptr, _) => ptr.get().0.to_lvalue().to_flow(),
             Expr::Constant(val) => val.clone().to_flow(),
-            Expr::Unary(op, arg_expr) => {
-                if *op == UnaryOp::Reference {
-                    if let Expr::Location(ptr, _) = arg_expr.as_ref().deref() {
-                        return match ptr.get() {
-                            Pointer::Function(i) => Value::Pointer(Pointer::Function(i)),
-                            ptr => ptr
-                                .to_absolute(&mut env.stack)
-                                .map(|i| Value::Pointer(Pointer::Absolute(i)))
-                                .unwrap_or(Value::Void),
-                        }
-                        .to_flow();
-                    }
-                    panic!("getting address of arbitrary expression is not supported")
+            Expr::Tuple(elems) => elems
+                .iter()
+                .fold(Flow::Normal(Vec::<Value<'src>>::new()), |vals, elem| {
+                    vals.and_then(|mut vals| {
+                        elem.0.eval_impl(env).map(|val| {
+                            vals.push(val.to_rvalue(env).unwrap_rvalue());
+                            vals
+                        })
+                    })
+                })
+                .map(Value::Tuple)
+                .map(CValue::RValue),
+            Expr::Reference { is_mut: _, expr } => {
+                if let Expr::Location(ptr, _) = &expr.as_ref().0 {
+                    return Value::Pointer(match ptr.get().0 {
+                        Pointer::Function(i) => Pointer::Function(i),
+                        ptr => ptr.to_absolute(&env.stack),
+                    })
+                    .to_flow();
                 }
-                arg_expr.eval_impl(env).map(|arg| match op {
-                    UnaryOp::Negate => Value::Number(arg.unwrap_number().wrapping_neg()),
-                    UnaryOp::LogicNot => Value::Boolean(!arg.unwrap_boolean()),
-                    UnaryOp::Dereference => match arg {
-                        Value::Pointer(i) => env.get(i).unwrap_or(Value::Void),
-                        _ => Value::Void,
-                    },
-                    UnaryOp::Reference => unreachable!(),
+                unreachable!()
+            }
+            Expr::Dereference { is_mut: _, expr } => {
+                expr.0.eval_impl(env).map(|arg| match arg.unwrap(env) {
+                    Value::Pointer(ptr) => ptr.to_lvalue(),
+                    _ => CValue::default(),
                 })
             }
-            Expr::Binary(op, left_expr, right_expr) => left_expr
+            Expr::Unary(op, arg) => arg
+                .0
                 .eval_impl(env)
-                .chain(|| right_expr.eval_impl(env))
-                .map(|(left, right)| op.calc(left, right)),
-            Expr::Assign(lhs_expr, rhs_expr) => lhs_expr
+                .map(|arg| CValue::RValue(op.calc(arg.unwrap(env)))),
+            Expr::Binary(op, left, right) => left
+                .0
                 .eval_impl(env)
-                .chain(|| rhs_expr.eval_impl(env))
-                .map(|(left, right)| {
-                    env.stack.assign(left.unwrap_pointer(), right.clone());
-                    right
-                }),
-            Expr::Seq(first_expr, second_expr) => first_expr
-                .eval_impl(env)
-                .and_then(|_| second_expr.eval_impl(env)),
-            Expr::Let(_, _) => unreachable!(),
-            Expr::VarScope(var, val_expr, cont_expr) => val_expr.eval_impl(env).and_then(|val| {
-                env.stack.push(var, val);
-                let res = cont_expr.eval_impl(env);
+                .chain(|| right.0.eval_impl(env))
+                .map(|(left, right)| op.calc(left.unwrap(env), right.unwrap(env)))
+                .map(CValue::RValue),
+            Expr::Assign(lhs, rhs) => {
+                lhs.0
+                    .eval_impl(env)
+                    .chain(|| rhs.0.eval_impl(env))
+                    .map(|(left, right)| {
+                        env.stack.assign(left.unwrap_lvalue(), right.unwrap(env));
+                        CValue::default()
+                    })
+            }
+            Expr::Seq(first, second) => {
+                first.0.eval_impl(env).and_then(|_| second.0.eval_impl(env))
+            }
+            Expr::Let { .. } => unreachable!(),
+            Expr::VarScope {
+                var,
+                is_mut: _,
+                val,
+                cont,
+            } => val.0.eval_impl(env).and_then(|val| {
+                env.stack.push(var.name.0, val.unwrap(env));
+                let res = cont.0.eval_impl(env).map(|v| v.to_rvalue(env));
                 env.stack.pop();
                 res
             }),
-            Expr::Function(_, _) => unreachable!(),
-            Expr::FunScope(_, _, cont_expr) => cont_expr.eval_impl(env),
-            Expr::If(cond_expr, true_expr, false_expr) => {
-                cond_expr.eval_impl(env).and_then(|cond| {
-                    if cond.unwrap_boolean() {
-                        true_expr.eval_impl(env)
-                    } else {
-                        false_expr.eval_impl(env)
-                    }
-                })
-            }
-            Expr::Closure(func) => Value::Closure(func.clone()).to_flow(),
-            Expr::Call(callee_expr, arg_exprs) => callee_expr
+            Expr::Function { .. } => unreachable!(),
+            Expr::FunScope { cont, .. } => cont.0.eval_impl(env),
+            Expr::Cast(arg, _) => arg.0.eval_impl(env),
+            Expr::If {
+                cond,
+                if_true,
+                if_false,
+            } => cond.0.eval_impl(env).and_then(|cond| {
+                if cond.unwrap(env).unwrap_boolean() {
+                    if_true.0.eval_impl(env)
+                } else {
+                    if_false.0.eval_impl(env)
+                }
+            }),
+            Expr::Closure(func, captures) => Value::Closure(
+                func.clone(),
+                Value::init_closure_captures(captures, &env.stack),
+            )
+            .to_flow(),
+            Expr::Call(callee_expr, args1) => callee_expr
+                .0
                 .eval_impl(env)
-                .map(|val| val.unwrap_function(env))
-                .and_then(|func| {
-                    let Function(arg_names, body_expr) = func.deref();
-                    arg_exprs
+                .map(|val| val.unwrap(env))
+                .and_then(|val: Value<'_>| {
+                    // TODO: support functions too
+                    let (func, _) = val.unwrap_closure_ref();
+                    let Function { args, body, .. } = func.deref();
+                    args1
                         .iter()
-                        .fold(Flow::Normal(Vec::new()), |vals, expr| {
+                        .fold(Flow::Normal(Vec::new()), |vals, arg| {
                             vals.and_then(|mut vals| {
-                                expr.eval_impl(env).map(|val| {
+                                arg.0.eval_impl(env).map(|val| {
                                     vals.push(val);
                                     vals
                                 })
                             })
                         })
                         .map(|arg_vals| {
-                            zip(arg_names.iter(), arg_vals.iter())
-                                .for_each(|(name, val)| env.stack.push(name, val.clone()));
-                            let res = body_expr.eval_impl(env);
-                            arg_names.iter().for_each(|_| {
+                            env.stack.push("", val);
+                            zip(args.iter(), arg_vals.iter()).for_each(|(name, val)| {
+                                env.stack.push(name.0, val.clone().unwrap(env))
+                            });
+                            let res = body.0.eval_impl(env).map(|val| val.to_rvalue(env));
+                            args.iter().for_each(|_| {
                                 env.stack.pop();
                             });
+                            env.stack.pop();
                             res.to_value()
                         })
                 }),
-            Expr::Return(expr) => expr.eval_impl(env).and_then(|val| Flow::Return(val)),
-            Expr::While(cond_expr, inner_expr) => loop {
-                let flow = cond_expr
+            Expr::Return(expr) => expr
+                .0
+                .eval_impl(env)
+                .and_then(|val| Flow::Return(val.unwrap(env))),
+            Expr::While(cond, inner) => loop {
+                let flow = cond
+                    .0
                     .eval_impl(env)
                     .and_then(|cond| {
-                        if cond.unwrap_boolean() {
+                        if cond.unwrap(env).unwrap_boolean() {
                             Flow::default()
                         } else {
                             Flow::Break
                         }
                     })
-                    .and_then(|_: ()| inner_expr.eval_impl(env));
+                    .and_then(|_: ()| inner.0.eval_impl(env));
                 match flow {
                     Flow::Return(_) => break flow,
                     Flow::Break => break Flow::default(),
                     _ => continue,
                 }
             },
-            Expr::For(var, iter_expr, inner_expr) => iter_expr.eval_impl(env).and_then(|val| {
-                let flow = val.unwrap_range().into_iter().fold(
-                    Value::Void.to_flow(),
+            Expr::For { var, iter, body } => iter.0.eval_impl(env).and_then(|val| {
+                let flow = val.unwrap(env).unwrap_range().into_iter().fold(
+                    Flow::default(),
                     |flow: Flow, i: i32| {
                         flow.and_then(|_| {
-                            env.stack.push(var, Value::Number(i));
-                            let res = match inner_expr.eval_impl(env) {
+                            env.stack.push(var.name.0, Value::Number(i));
+                            let res = match body.0.eval_impl(env) {
                                 Flow::Continue => Flow::default(),
                                 flow => flow,
                             };
@@ -572,94 +900,122 @@ impl<'src> Expr<'src> {
     }
 
     pub fn eval(&self, mut env: Environment<'src>) -> Value<'src> {
-        let res = self.eval_impl(&mut env).to_value();
-        drop(env);
-        res
+        self.eval_impl(&mut env).to_value().unwrap(&env)
     }
 
-    fn set_up_impl(
-        spanned_self: &Spanned<Self>,
-        env: &mut Environment<'src>,
-        sym_stack: &mut Vec<(&'src str, Option<usize>)>,
+    fn set_up_impl<'a>(
+        spanned_self: &'a Spanned<Self>,
+        sym_stack: &mut SymStack<'src>,
+        cap_stack: &mut Vec<&'a RefCell<HashMap<String, Pointer<'src>>>>,
     ) {
         let _ = Expr::walk(spanned_self, |expr| match &expr.0 {
-            Expr::Location(ptr, var) => {
-                let opt = sym_stack
-                    .iter()
-                    .find(|(var2, _)| var == var2)
-                    .map(|x| x.1)
-                    .unwrap_or_else(|| panic!("undefined variable {}", var));
-                ptr.set(match opt {
-                    Some(i) => Pointer::Function(i),
-                    None => Pointer::Relative(env.stack.index(var).unwrap_or_else(|| {
-                        panic!(
-                            "accessing variable {} outside of closure is not supported",
-                            var
-                        )
-                    })),
-                });
+            Expr::Location(cell, var) => {
+                let (index, func_index, _, var_depth) = sym_stack
+                    .find_var(var)
+                    .unwrap_or_else(|| panic!("undefined variable `{}`", var));
+
+                if let Some(i) = func_index {
+                    cell.set((Pointer::Function(i), var_depth));
+                    return true;
+                };
+
+                let depth = sym_stack.depth();
+                let mut ptr = Pointer::Relative(sym_stack.index_at_depth(var, var_depth).unwrap());
+                for d in var_depth..depth {
+                    cap_stack[d]
+                        .borrow_mut()
+                        .entry(var.to_string())
+                        .or_insert(ptr);
+                    ptr = Pointer::Capture(sym_stack.closure_stack_size(d + 1), index, var);
+                }
+                cell.set((ptr, var_depth));
                 true
             }
-            Expr::VarScope(var, val_expr, cont_expr) => {
-                Self::set_up_impl(val_expr.as_ref(), env, sym_stack);
-                sym_stack.push((var.0, None));
-                env.stack.push(var.0, Value::Void);
-                Self::set_up_impl(cont_expr.as_ref(), env, sym_stack);
-                env.stack.pop();
+            Expr::Reference { is_mut, expr } => {
+                Self::set_up_impl(expr.as_ref(), sym_stack, cap_stack);
+                let Expr::Location(_, var) = &expr.0 else {
+                    panic!("getting address of arbitrary expression is not supported");
+                };
+                let var_is_mut = sym_stack.find_var(var).map(|x| x.2).unwrap();
+                if *is_mut && !var_is_mut {
+                    panic!("cannot mutate immutable variable {}", var)
+                }
                 false
             }
-            Expr::FunScope(name, func, cont_expr) => {
-                // disallow accessing variables outside of closure
-                let Function(arg_names, body_expr) = func.deref();
-                sym_stack.push((name.0, Some(env.functions.len())));
-                env.functions.push(func.clone());
-                let mut new_stack = Stack::new();
-                for arg_name in arg_names.iter() {
-                    new_stack.push(arg_name, Value::Void);
-                    sym_stack.push((arg_name, None));
-                }
-                mem::swap(&mut env.stack, &mut new_stack);
-                Self::set_up_impl(body_expr.as_ref(), env, sym_stack);
-                mem::swap(&mut env.stack, &mut new_stack);
-                for _ in arg_names.iter() {
-                    sym_stack.pop();
-                }
-                Self::set_up_impl(cont_expr.as_ref(), env, sym_stack);
+            Expr::Assign(lhs, _) => {
+                match &lhs.as_ref().0 {
+                    Expr::Location(_, var) => {
+                        if !sym_stack.find_var(var).map(|x| x.2).unwrap() {
+                            panic!("cannot mutate immutable variable {}", var)
+                        }
+                    }
+                    _ => {}
+                };
+                true
+            }
+            Expr::VarScope {
+                var,
+                is_mut,
+                val,
+                cont,
+            } => {
+                Self::set_up_impl(val.as_ref(), sym_stack, cap_stack);
+                sym_stack.push(var.name.0, None, *is_mut);
+                Self::set_up_impl(cont.as_ref(), sym_stack, cap_stack);
                 sym_stack.pop();
                 false
             }
-            Expr::Closure(func) => {
+            Expr::FunScope { name, func, cont } => {
                 // disallow accessing variables outside of closure
-                let Function(arg_names, body_expr) = func.deref();
-                let mut new_stack = Stack::new();
-                for arg_name in arg_names.iter() {
-                    new_stack.push(arg_name, Value::Void);
-                    sym_stack.push((arg_name, None));
-                }
-                mem::swap(&mut env.stack, &mut new_stack);
-                Self::set_up_impl(body_expr.as_ref(), env, sym_stack);
-                mem::swap(&mut env.stack, &mut new_stack);
-                for _ in arg_names.iter() {
-                    sym_stack.pop();
-                }
+                // let Function { args, body, .. } = func.deref();
+                // sym_stack.push(name.0, Some(env.functions.len()), false);
+                // env.functions.push(func.clone());
+                // let mut new_stack = Stack::new();
+                // for name in args.iter() {
+                //     new_stack.push(name.0, Value::default());
+                //     sym_stack.push(name.0, None, false);
+                // }
+                // mem::swap(&mut env.stack, &mut new_stack);
+                // Self::set_up_impl(body.as_ref(), env, sym_stack);
+                // mem::swap(&mut env.stack, &mut new_stack);
+                // for _ in args.iter() {
+                //     sym_stack.pop();
+                // }
+                // Self::set_up_impl(cont.as_ref(), env, sym_stack);
+                // sym_stack.pop();
                 false
             }
-            Expr::For(var, iter_expr, inner_expr) => {
-                Self::set_up_impl(iter_expr.as_ref(), env, sym_stack);
-                sym_stack.push((var.0, None));
-                env.stack.push(var.0, Value::Void);
-                Self::set_up_impl(inner_expr.as_ref(), env, sym_stack);
-                env.stack.pop();
+            Expr::Closure(func, captures) => {
+                let Function { args, body, .. } = func.deref();
+                sym_stack.push_closure();
+                for name in args.iter() {
+                    sym_stack.push(name.0, None, false);
+                }
+                cap_stack.push(captures);
+                Self::set_up_impl(body.as_ref(), sym_stack, cap_stack);
+                sym_stack.pop_closure();
+                cap_stack.pop();
+                false
+            }
+            Expr::For {
+                var: Variable { name, .. },
+                iter,
+                body,
+            } => {
+                Self::set_up_impl(iter.as_ref(), sym_stack, cap_stack);
+                sym_stack.push(name.0, None, false);
+                Self::set_up_impl(body.as_ref(), sym_stack, cap_stack);
+                sym_stack.pop();
                 false
             }
             _ => true,
         });
     }
 
-    pub fn set_up(spanned_self: &Spanned<Self>) -> Environment<'src> {
-        let mut env: Environment<'_> = Environment::default();
-        let mut sym_stack: Vec<(&'src str, Option<usize>)> = Vec::new();
-        Self::set_up_impl(spanned_self, &mut env, &mut sym_stack);
-        env
+    pub fn set_up<'a>(spanned_self: &'a Spanned<Self>) -> Environment<'src> {
+        let mut sym_stack: SymStack<'src> = SymStack::new();
+        let mut cap_stack: Vec<&'a RefCell<HashMap<String, Pointer<'src>>>> = Vec::new();
+        Self::set_up_impl(spanned_self, &mut sym_stack, &mut cap_stack);
+        Environment::default()
     }
 }

@@ -85,7 +85,16 @@ version = "0.1.0"
 dependencies = [
  "ariadne",
  "chumsky",
+ "hashbrown",
+ "hex-coding-macros",
  "serde",
+]
+
+[[package]]
+name = "hex-coding-macros"
+version = "0.1.0"
+dependencies = [
+ "chumsky",
 ]
 
 [[package]]

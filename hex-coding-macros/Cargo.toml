@@ -1,0 +1,12 @@
+[package]
+name = "hex-coding-macros"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "hex_coding_macros"
+path = "src/lib.rs"
+proc-macro = true
+
+[dependencies]
+chumsky = { version = "1.0.0-alpha.8", features = ["serde"] } 

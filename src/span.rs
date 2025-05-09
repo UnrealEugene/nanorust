@@ -1,5 +1,3 @@
-use core::ops::{Deref, DerefMut};
-
 use chumsky::{
     extra::ParserExtra,
     input::{Input, MapExtra},
@@ -25,24 +23,7 @@ impl<T: Default> Spanned<T> {
     }
 }
 
-impl<T> Deref for Spanned<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<T> DerefMut for Spanned<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-pub fn span_wrap<'src, T, I, E>(
-    x: T,
-    e: &mut MapExtra<'src, '_, I, E>,
-) -> Spanned<T>
+pub fn span_wrap<'src, T, I, E>(x: T, e: &mut MapExtra<'src, '_, I, E>) -> Spanned<T>
 where
     I: Input<'src, Span = SimpleSpan>,
     E: ParserExtra<'src, I>,

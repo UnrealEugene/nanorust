@@ -6,14 +6,15 @@ use chumsky::prelude::*;
 use crate::span::{span_wrap, Spanned};
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum Token<'str> {
+pub enum Token<'src> {
     Bool(bool),
     Num(i32),
-    Op(&'str str),
+    Op(&'src str),
     Ctrl(char),
-    Ident(&'str str),
+    Ident(&'src str),
     Fn,
     Let,
+    Mut,
     If,
     Else,
     While,
@@ -22,6 +23,16 @@ pub enum Token<'str> {
     Return,
     Break,
     Continue,
+    As,
+}
+
+impl<'src> Token<'src> {
+    pub fn unwrap_op(self) -> &'src str {
+        match self {
+            Token::Op(op) => op,
+            _ => panic!("unwrap of non-op token")
+        }
+    }
 }
 
 impl<'src> Display for Token<'src> {
@@ -34,6 +45,7 @@ impl<'src> Display for Token<'src> {
             Token::Ident(x) => write!(f, "{}", x),
             Token::Fn => write!(f, "fn"),
             Token::Let => write!(f, "let"),
+            Token::Mut => write!(f, "mut"),
             Token::If => write!(f, "if"),
             Token::Else => write!(f, "else"),
             Token::While => write!(f, "while"),
@@ -42,6 +54,7 @@ impl<'src> Display for Token<'src> {
             Token::Return => write!(f, "return"),
             Token::Break => write!(f, "break"),
             Token::Continue => write!(f, "continue"),
+            Token::As => write!(f, "as"),
         }
     }
 }
@@ -63,6 +76,7 @@ pub fn lexer<'src>(
         .boxed();
 
     let op = choice((
+        just("->"),
         just("..="),
         just(".."),
         just("=="),
@@ -87,12 +101,13 @@ pub fn lexer<'src>(
     .labelled("operator")
     .boxed();
 
-    let ctrl = one_of("(){}[]|;,").map(Token::Ctrl).boxed();
+    let ctrl = one_of("(){}[]|:;,").map(Token::Ctrl).boxed();
 
     let ident = text::ident()
         .map(|ident: &'src str| match ident {
             "fn" => Token::Fn,
             "let" => Token::Let,
+            "mut" => Token::Mut,
             "if" => Token::If,
             "else" => Token::Else,
             "while" => Token::While,
@@ -101,6 +116,7 @@ pub fn lexer<'src>(
             "return" => Token::Return,
             "break" => Token::Break,
             "continue" => Token::Continue,
+            "as" => Token::As,
             _ => Token::Ident(ident),
         })
         .boxed();

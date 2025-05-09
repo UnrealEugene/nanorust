@@ -1,9 +1,10 @@
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 
 use crate::{
     expr::*,
     lexer::Token,
     span::{span_wrap, Spanned},
+    typing::{BuiltinType, Polytype, Type},
 };
 use alloc::{boxed::Box, rc::Rc, vec::Vec};
 use chumsky::{input::ValueInput, prelude::*};
@@ -18,8 +19,6 @@ impl UnaryOp {
         select! {
             Token::Op(op) if op == "-" => UnaryOp::Negate,
             Token::Op(op) if op == "!" => UnaryOp::LogicNot,
-            Token::Op(op) if op == "&" => UnaryOp::Reference,
-            Token::Op(op) if op == "*" => UnaryOp::Dereference,
         }
         .labelled("unary operator")
     }
@@ -96,25 +95,83 @@ impl BinaryOp {
     }
 }
 
+impl BuiltinType {
+    fn parse<'src, I>() -> impl Parser<'src, I, Type<'src>, ParseError<'src>> + Copy + Clone
+    where
+        I: ValueInput<'src, Token = Token<'src>, Span = SimpleSpan>,
+    {
+        select! {
+            Token::Ident(n) if n == "i32" => BuiltinType::I32,
+            Token::Ident(n) if n == "bool" => BuiltinType::Bool,
+            Token::Ident(n) if n == "range" => BuiltinType::Range,
+        }
+        .map(Type::Builtin)
+    }
+}
+
 pub fn parse_stmt<'src, I>() -> impl Parser<'src, I, Spanned<Expr<'src>>, ParseError<'src>>
 where
     I: ValueInput<'src, Token = Token<'src>, Span = SimpleSpan>,
 {
     recursive(
         |stmt: Recursive<dyn Parser<'_, I, Spanned<Option<Expr<'_>>>, _>>| {
-            // let var = {
-            //     chumsky::primitive::select(move |x, extra| match x {
-            //         Token::Ident(var) => Some(var),
-            //         _ => None,
-            //     })
-            //     .map_with(span_wrap)
-            // };
-
-            let var = select! {
-                Token::Ident(var) => var,
+            let ident = select! {
+                Token::Ident(ident) => ident,
             }
             .map_with(span_wrap)
-            .labelled("identifier");
+            .labelled("identifier")
+            .boxed();
+
+            let type_ = recursive(|type_| {
+                let type_ref = just(Token::Op("&"))
+                    .ignore_then(just(Token::Mut).or_not().map(|opt| opt.is_some()))
+                    .then(type_.clone())
+                    .map(|(is_mut, ty)| Type::Reference {
+                        is_mut,
+                        ty: Box::new(ty),
+                    });
+
+                let type_tuple = type_
+                    .clone()
+                    .separated_by(just(Token::Ctrl(',')))
+                    .allow_trailing()
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')));
+
+                choice((
+                    type_ref,
+                    just(Token::Ident("_")).map(|_| Type::Unknown),
+                    BuiltinType::parse(),
+                    ident.clone().map(Type::Concrete),
+                    just(Token::Fn)
+                        .ignore_then(type_tuple.clone())
+                        .then_ignore(just(Token::Op("->")))
+                        .then(type_.clone())
+                        .map(|(args, res)| Type::Function(args, Box::new(res))),
+                    type_
+                        .clone()
+                        .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
+                    type_tuple.map(Type::Tuple),
+                ))
+                .labelled("type")
+            });
+
+            let var = ident
+                .clone()
+                .then(
+                    just(Token::Ctrl(':'))
+                        .labelled("type annotation")
+                        .ignore_then(type_.clone())
+                        .or_not()
+                        .map(Option::unwrap_or_default)
+                        .map(RefCell::new),
+                )
+                .map(|(name, type_)| Variable { name, ty: type_ })
+                .boxed();
+
+            let ret_type = just(Token::Op("->"))
+                .ignore_then(type_.clone())
+                .labelled("return type");
 
             let bool_ = select! { Token::Bool(x) => x };
 
@@ -143,12 +200,10 @@ where
                                 .ignore_then(if_stmt.or(block.clone()))
                                 .or_not(),
                         )
-                        .map_with(|((cond, if_true), if_false), e| {
-                            Expr::If(
-                                Box::new(cond),
-                                Box::new(if_true),
-                                Box::new(Spanned::unwrap_or_default(if_false, e.span())),
-                            )
+                        .map_with(|((cond, if_true), if_false), e| Expr::If {
+                            cond: Box::new(cond),
+                            if_true: Box::new(if_true),
+                            if_false: Box::new(Spanned::unwrap_or_default(if_false, e.span())),
                         })
                         .map_with(span_wrap)
                 })
@@ -165,9 +220,14 @@ where
                 let lambda = var_list
                     .clone()
                     .delimited_by(just(Token::Ctrl('|')), just(Token::Ctrl('|')))
+                    .or(just(Token::Op("||")).map(|_| Vec::new()))
+                    .then(ret_type.clone().or_not().map(Option::unwrap_or_default))
                     .then(expr.clone())
-                    .map(|(var_names, body_expr)| {
-                        Expr::Closure(Rc::new(Function(var_names, Box::new(body_expr))))
+                    .map(|((args, ret_type), body)| {
+                        Expr::Closure(
+                            Rc::new(Function::new(args, ret_type, body)),
+                            RefCell::default(),
+                        )
                     })
                     .map_with(span_wrap)
                     .boxed();
@@ -181,13 +241,20 @@ where
                     .boxed();
 
                 let atom = choice((
+                    num.map(|x| Expr::Constant(Value::Number(x))),
+                    bool_.map(|x| Expr::Constant(Value::Boolean(x))),
+                    ident
+                        .clone()
+                        .map(|var| Expr::Location(Cell::new((Pointer::Invalid, 0)), var.0)),
                     expr.clone()
                         .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
                         .map(|s| s.0),
-                    bool_.map(|x| Expr::Constant(Value::Boolean(x))),
-                    var.clone()
-                        .map(|var| Expr::Location(Cell::new(Pointer::Invalid), var.0)),
-                    num.map(|x| Expr::Constant(Value::Number(x))),
+                    expr.clone()
+                        .separated_by(just(Token::Ctrl(',')))
+                        .allow_trailing()
+                        .collect::<Vec<_>>()
+                        .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
+                        .map(Expr::Tuple),
                 ))
                 .map_with(span_wrap)
                 .labelled("expression")
@@ -216,18 +283,51 @@ where
                     )
                     .boxed();
 
-                let unary = UnaryOp::parse()
-                    .labelled("expression")
-                    .repeated()
-                    .foldr_with(call.clone(), |op, x, e| {
-                        Spanned(Expr::Unary(op, Box::new(x)), e.span())
-                    })
-                    .boxed();
+                let unary = recursive(|unary| {
+                    let unary_mut = just(Token::Op("&"))
+                        .or(just(Token::Op("*")))
+                        .map(Token::unwrap_op)
+                        .then(just(Token::Mut).or_not().map(|opt| opt.is_some()))
+                        .then(unary.clone().or(call.clone()))
+                        .map(|((op, is_mut), arg)| match op {
+                            "&" => Expr::Reference {
+                                is_mut,
+                                expr: Box::new(arg),
+                            },
+                            "*" => Expr::Dereference {
+                                is_mut,
+                                expr: Box::new(arg),
+                            },
+                            _ => unreachable!(),
+                        })
+                        .boxed();
 
-                let product = unary
+                    UnaryOp::parse()
+                        .then(unary.clone().or(call.clone()))
+                        .map(|(op, arg)| Expr::Unary(op, Box::new(arg)))
+                        .or(unary_mut.clone())
+                        .map_with(span_wrap)
+                        .or(call.clone())
+                })
+                .boxed();
+
+                let cast = unary
                     .clone()
                     .foldl_with(
-                        BinaryOp::parse_product().then(unary).repeated(),
+                        just(Token::As).then(type_.clone()).repeated(),
+                        |lhs, (_, rhs), e| {
+                            Spanned(
+                                Expr::Cast(Box::new(lhs), Polytype::from_unknown(rhs)),
+                                e.span(),
+                            )
+                        },
+                    )
+                    .boxed();
+
+                let product = cast
+                    .clone()
+                    .foldl_with(
+                        BinaryOp::parse_product().then(cast).repeated(),
                         |lhs, (op, rhs), e| {
                             Spanned(Expr::Binary(op, Box::new(lhs), Box::new(rhs)), e.span())
                         },
@@ -302,27 +402,22 @@ where
             });
 
             let let_expr = just(Token::Let)
-                .ignore_then(var.clone())
-                .then(just(Token::Op("=")).ignore_then(expr.clone()).or_not())
-                .map_with(|(var, rhs), e| {
-                    Expr::Let(
-                        var,
-                        Box::new(rhs.unwrap_or(Spanned(Expr::default(), e.span().to_end()))),
-                    )
+                .ignore_then(just(Token::Mut).or_not().map(|opt| opt.is_some()))
+                .then(var.clone())
+                .then(just(Token::Op("=")).ignore_then(expr.clone()))
+                .map(|((is_mut, var), val)| Expr::Let {
+                    var: Variable {
+                        name: var.name,
+                        ty: RefCell::new(Polytype::from_unknown(var.ty.take())),
+                    },
+                    is_mut,
+                    val: Box::new(val),
                 })
                 .map_with(span_wrap)
                 .boxed();
 
-            let assign = var
+            let assign = expr
                 .clone()
-                .map(|var| {
-                    Expr::Unary(
-                        UnaryOp::Reference,
-                        Box::new(var.map(|var| Expr::Location(Cell::new(Pointer::Invalid), var))),
-                    )
-                })
-                .map_with(span_wrap)
-                // .or(token("*").ignore_then(expr.clone())) // TODO: fix precedence
                 .then(
                     just(Token::Op("="))
                         .labelled("binary operator")
@@ -346,22 +441,26 @@ where
                 .then_ignore(just(Token::In))
                 .then(expr.clone())
                 .then(block.clone())
-                .map(|((var, iter_expr), inner_expr)| {
-                    Expr::For(var, Box::new(iter_expr), Box::new(inner_expr))
+                .map(|((var, iter), body)| Expr::For {
+                    var,
+                    iter: Box::new(iter),
+                    body: Box::new(body),
                 })
                 .map_with(span_wrap)
                 .boxed();
 
             let func_stmt = just(Token::Fn)
-                .ignore_then(var.clone())
+                .ignore_then(ident.clone())
                 .then(
                     var_list
                         .clone()
                         .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
                 )
+                .then(ret_type.clone().or_not().map(Option::unwrap_or_default))
                 .then(block.clone())
-                .map(|((name, var_names), body_expr)| {
-                    Expr::Function(name, Rc::new(Function(var_names, Box::new(body_expr))))
+                .map(|(((name, args), ret_type), body)| Expr::Function {
+                    name,
+                    func: Rc::new(Function::new(args, ret_type, body)),
                 })
                 .map_with(span_wrap)
                 .boxed();
@@ -373,6 +472,7 @@ where
                 for_stmt.clone(),
                 func_stmt.clone(),
             ))
+            .labelled("statement")
             .boxed();
 
             let atom = choice((let_expr, assign, expr.clone()))
@@ -392,35 +492,37 @@ where
                 .or(atom
                     .clone()
                     .or_not()
-                    .map_with(|opt, e| Spanned::unwrap_or_default(opt, e.span()))
                     .then(
                         just(Token::Ctrl(';'))
                             .labelled("semicolon")
                             .ignore_then(stmt.clone())
                             .or_not(),
                     )
-                    .map_with(|(first_expr, second_opt), e| match second_opt {
-                        Some(second_opt) => Spanned(
+                    .map_with(|(first_opt, second_opt), e| match (first_opt, second_opt) {
+                        (Some(first_expr), Some(second_expr)) => Spanned(
                             Some(Expr::new_seq(
                                 first_expr,
-                                second_opt.map(Option::unwrap_or_default),
+                                second_expr.map(Option::unwrap_or_default),
                             )),
                             e.span(),
                         ),
-                        None => first_expr.map(Option::Some),
+                        (Some(first_expr), None) => first_expr.map(Option::Some),
+                        (None, Some(second_expr)) => second_expr,
+                        (None, None) => Spanned(None, e.span().to_end()),
                     }))
                 .map_with(|opt: Spanned<Option<Expr>>, e| {
                     opt.map(|opt| match opt {
-                        Some(Expr::Let(var, val_expr)) => Some(Expr::VarScope(
+                        Some(Expr::Let { var, is_mut, val }) => Some(Expr::VarScope {
                             var,
-                            val_expr,
-                            Box::new(Spanned(Default::default(), e.span().to_end())),
-                        )),
-                        Some(Expr::Function(name, func)) => Some(Expr::FunScope(
+                            is_mut,
+                            val,
+                            cont: Box::new(Spanned(Default::default(), e.span().to_end())),
+                        }),
+                        Some(Expr::Function { name, func }) => Some(Expr::FunScope {
                             name,
                             func,
-                            Box::new(Spanned(Default::default(), e.span().to_end())),
-                        )),
+                            cont: Box::new(Spanned(Default::default(), e.span().to_end())),
+                        }),
                         _ => opt,
                     })
                 })
