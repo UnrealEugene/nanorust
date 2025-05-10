@@ -528,6 +528,7 @@ where
                         }),
                         Some(Expr::Function { name, func }) => Some(Expr::FunScope {
                             name,
+                            index: Cell::new(0),
                             func,
                             cont: Box::new(Spanned(Default::default(), e.span().to_end())),
                         }),

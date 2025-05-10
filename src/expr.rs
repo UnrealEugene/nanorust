@@ -51,6 +51,7 @@ pub enum Expr<'src> {
     }, // Void
     FunScope {
         name: Identifier<'src>,
+        index: Cell<usize>,
         func: Rc<Function<'src>>,
         cont: Box<Spanned<Self>>,
     }, // any
@@ -99,6 +100,7 @@ impl<'src> Expr<'src> {
             },
             Expr::Function { name, func } => Expr::FunScope {
                 name,
+                index: Cell::new(0),
                 func,
                 cont: Box::new(second_span),
             },

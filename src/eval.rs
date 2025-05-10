@@ -6,6 +6,7 @@ use alloc::{
     vec,
     vec::Vec,
 };
+use chumsky::span::SimpleSpan;
 use hashbrown::HashMap;
 
 use crate::{
@@ -63,7 +64,70 @@ impl<'src> SymStack<'src> {
         self.0[depth]
             .iter()
             .rev()
+            .filter(|(_, func_ind, _)| func_ind.is_none())
             .position(|(var2, _, _)| var == *var2)
+    }
+}
+
+struct FunStack<'src> {
+    fun_scopes: Vec<HashMap<&'src str, (SimpleSpan, usize)>>,
+    fun_list: Vec<Rc<Function<'src>>>,
+}
+
+impl<'src> FunStack<'src> {
+    fn new() -> Self {
+        FunStack {
+            fun_scopes: Vec::new(),
+            fun_list: Vec::new(),
+        }
+    }
+
+    fn to_sym_stack(&self) -> SymStack<'src> {
+        let mut res = SymStack::new();
+        for scopes in self.fun_scopes.iter() {
+            for (name, (_, index)) in scopes.iter() {
+                res.push(name, Some(*index), false);
+            }
+        }
+        res
+    }
+
+    fn push_scope(&mut self, expr: &Spanned<Expr<'src>>, sym_stack: &mut SymStack<'src>) {
+        let mut scope = HashMap::new();
+        match &expr.0 {
+            Expr::Let { .. } => unreachable!(),
+            Expr::VarScope { cont, .. } => self.push_scope(&*cont, sym_stack),
+            Expr::Function { .. } => unreachable!(),
+            Expr::FunScope {
+                name,
+                index,
+                func,
+                cont,
+            } => {
+                let i = self.fun_list.len();
+                index.set(i);
+                scope
+                    .entry(name.0)
+                    .and_modify(|_| panic!("the function `{}` is defined multiple times", name.0))
+                    .or_insert_with(|| (name.1, i));
+                self.fun_list.push(func.clone());
+                sym_stack.push(name.0, Some(i), false);
+                self.push_scope(cont, sym_stack);
+            }
+            _ => {}
+        };
+        self.fun_scopes.push(scope);
+    }
+
+    fn pop_scope(&mut self, sym_stack: &mut SymStack<'src>) {
+        for _ in 0..self.fun_scopes.last().unwrap().len() {
+            sym_stack.pop();
+        }
+        self.fun_scopes.pop();
+    }
+
+    fn to_function_list(self) -> Vec<Rc<Function<'src>>> {
+        self.fun_list
     }
 }
 
@@ -71,9 +135,16 @@ impl<'src> Expr<'src> {
     fn set_up_impl<'a>(
         spanned_self: &'a Spanned<Self>,
         sym_stack: &mut SymStack<'src>,
+        fun_stack: &mut FunStack<'src>,
         cap_stack: &mut Vec<&'a RefCell<HashMap<String, Pointer<'src>>>>,
     ) {
         let _ = Expr::walk(spanned_self, |expr| match &expr.0 {
+            Expr::Block(expr) => {
+                fun_stack.push_scope(expr.as_ref(), sym_stack);
+                Self::set_up_impl(expr.as_ref(), sym_stack, fun_stack, cap_stack);
+                fun_stack.pop_scope(sym_stack);
+                false
+            }
             Expr::Location(cell, var) => {
                 let (index, func_index, _, var_depth) = sym_stack
                     .find_var(var)
@@ -97,7 +168,7 @@ impl<'src> Expr<'src> {
                 true
             }
             Expr::Reference { is_mut, expr } => {
-                Self::set_up_impl(expr.as_ref(), sym_stack, cap_stack);
+                Self::set_up_impl(expr.as_ref(), sym_stack, fun_stack, cap_stack);
                 let Expr::Location(_, var) = &expr.0 else {
                     panic!("getting address of arbitrary expression is not supported");
                 };
@@ -124,30 +195,27 @@ impl<'src> Expr<'src> {
                 val,
                 cont,
             } => {
-                Self::set_up_impl(val.as_ref(), sym_stack, cap_stack);
+                Self::set_up_impl(val.as_ref(), sym_stack, fun_stack, cap_stack);
                 sym_stack.push(var.name.0, None, *is_mut);
-                Self::set_up_impl(cont.as_ref(), sym_stack, cap_stack);
+                Self::set_up_impl(cont.as_ref(), sym_stack, fun_stack, cap_stack);
                 sym_stack.pop();
                 false
             }
-            Expr::FunScope { name, func, cont } => {
-                // disallow accessing variables outside of closure
-                // let Function { args, body, .. } = func.deref();
-                // sym_stack.push(name.0, Some(env.functions.len()), false);
-                // env.functions.push(func.clone());
-                // let mut new_stack = Stack::new();
-                // for name in args.iter() {
-                //     new_stack.push(name.0, Value::default());
-                //     sym_stack.push(name.0, None, false);
-                // }
-                // mem::swap(&mut env.stack, &mut new_stack);
-                // Self::set_up_impl(body.as_ref(), env, sym_stack);
-                // mem::swap(&mut env.stack, &mut new_stack);
-                // for _ in args.iter() {
-                //     sym_stack.pop();
-                // }
-                // Self::set_up_impl(cont.as_ref(), env, sym_stack);
-                // sym_stack.pop();
+            Expr::FunScope { func, cont, .. } => {
+                let Function { args, body, .. } = func.deref();
+                // disallow accessing variables outside of function
+                let mut new_sym_stack = fun_stack.to_sym_stack();
+                let mut new_cap_stack = Vec::new();
+                for name in args.iter() {
+                    new_sym_stack.push(name.0, None, false);
+                }
+                Self::set_up_impl(
+                    body.as_ref(),
+                    &mut new_sym_stack,
+                    fun_stack,
+                    &mut new_cap_stack,
+                );
+                Self::set_up_impl(cont.as_ref(), sym_stack, fun_stack, cap_stack);
                 false
             }
             Expr::Closure(func, captures) => {
@@ -157,7 +225,7 @@ impl<'src> Expr<'src> {
                     sym_stack.push(name.0, None, false);
                 }
                 cap_stack.push(captures);
-                Self::set_up_impl(body.as_ref(), sym_stack, cap_stack);
+                Self::set_up_impl(body.as_ref(), sym_stack, fun_stack, cap_stack);
                 sym_stack.pop_closure();
                 cap_stack.pop();
                 false
@@ -167,9 +235,9 @@ impl<'src> Expr<'src> {
                 iter,
                 body,
             } => {
-                Self::set_up_impl(iter.as_ref(), sym_stack, cap_stack);
+                Self::set_up_impl(iter.as_ref(), sym_stack, fun_stack, cap_stack);
                 sym_stack.push(name.0, None, false);
-                Self::set_up_impl(body.as_ref(), sym_stack, cap_stack);
+                Self::set_up_impl(body.as_ref(), sym_stack, fun_stack, cap_stack);
                 sym_stack.pop();
                 false
             }
@@ -179,10 +247,14 @@ impl<'src> Expr<'src> {
 
     pub fn set_up<'a>(spanned_self: &'a Spanned<Self>) -> Environment<'src> {
         let mut sym_stack: SymStack<'src> = SymStack::new();
-        // let mut fun_stack: Vec<Vec<>>
+        let mut fun_stack: FunStack<'src> = FunStack::new();
+        fun_stack.push_scope(spanned_self, &mut sym_stack);
         let mut cap_stack: Vec<&'a RefCell<HashMap<String, Pointer<'src>>>> = Vec::new();
-        Self::set_up_impl(spanned_self, &mut sym_stack, &mut cap_stack);
-        Environment::default()
+        Self::set_up_impl(spanned_self, &mut sym_stack, &mut fun_stack, &mut cap_stack);
+        Environment {
+            stack: EvalStack::new(),
+            functions: fun_stack.to_function_list(),
+        }
     }
 }
 
@@ -205,8 +277,10 @@ impl<'src> EvalStack<'src> {
     }
 
     pub fn get(&self, ptr: Pointer<'src>) -> Option<&Value<'src>> {
-        let index = ptr.to_absolute(&self).unwrap_absolute();
-        self.0.get(index).map(|e| &e.1)
+        ptr.to_absolute(&self)
+            .try_unwrap_absolute()
+            .and_then(|i| self.0.get(i))
+            .map(|e| &e.1)
     }
 
     pub fn index<Q>(&self, k: &Q) -> Option<usize>
@@ -240,7 +314,7 @@ impl<'src> EvalStack<'src> {
 }
 
 impl<'src> Environment<'src> {
-    fn get(&self, ptr: Pointer<'src>) -> Option<Value<'src>> {
+    pub fn get(&self, ptr: Pointer<'src>) -> Option<Value<'src>> {
         self.stack.get(ptr).cloned().or_else(|| match ptr {
             Pointer::Function(i) => Some(Value::Function(i)),
             _ => None,
@@ -343,8 +417,7 @@ impl<'src> Expr<'src> {
                 .eval_impl(env)
                 .map(|val| val.unwrap(env))
                 .and_then(|val: Value<'_>| {
-                    // TODO: support functions too
-                    let (func, _) = val.unwrap_closure_ref();
+                    let func = val.to_function(env);
                     let Function { args, body, .. } = func.deref();
                     args1
                         .iter()

@@ -171,9 +171,14 @@ impl<'src> Pointer<'src> {
     }
 
     pub fn unwrap_absolute(self) -> usize {
+        self.try_unwrap_absolute()
+            .unwrap_or_else(|| panic!("unwrap of non-absolute pointer {:?}", self))
+    }
+
+    pub fn try_unwrap_absolute(self) -> Option<usize> {
         match self {
-            Pointer::Absolute(i) => i,
-            _ => panic!("unwrap of non-absolute pointer {:?}", self),
+            Pointer::Absolute(i) => Some(i),
+            _ => None,
         }
     }
 }
@@ -243,10 +248,10 @@ impl<'src> Value<'src> {
         }
     }
 
-    pub fn to_function(self, env: &Environment<'src>) -> Rc<Function<'src>> {
+    pub fn to_function(&self, env: &Environment<'src>) -> Rc<Function<'src>> {
         match self {
-            Value::Function(i) => env.functions.get(i).unwrap().clone(),
-            Value::Closure(func, _) => func,
+            Value::Function(i) => env.functions.get(*i).unwrap().clone(),
+            Value::Closure(func, _) => func.clone(),
             _ => panic!("unwrap of non-functional value {:?}", self),
         }
     }
@@ -289,7 +294,7 @@ impl<'src> Default for CValue<'src> {
 impl<'src> CValue<'src> {
     pub fn to_rvalue(self, env: &Environment<'src>) -> Self {
         match self {
-            CValue::LValue(ptr) => CValue::RValue(env.stack.get(ptr).unwrap().clone()),
+            CValue::LValue(ptr) => CValue::RValue(env.get(ptr).unwrap().clone()),
             CValue::RValue(_) => self,
         }
     }

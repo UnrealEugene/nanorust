@@ -26,7 +26,7 @@ fn test_file() {
         if let Some(ast) = ast.filter(|_| errs.len() + parse_errs.len() == 0) {
             let env = Expr::set_up(&ast);
 
-            let type_env = TypeEnv::new();
+            let type_env = TypeEnv::new(env.functions.clone());
             let type_result = type_env.infer_type(&ast);
 
             if type_result.is_err() {
