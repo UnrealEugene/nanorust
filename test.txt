@@ -1,9 +1,5 @@
-fn g(x: i32) -> _ {
-    f(x)   
+fn f<T>(x: T, y: T) -> T { 
+    x + y // ??? compiles
 }
 
-fn f(x) -> _ {
-    ()
-}
-
-g
+f

@@ -68,7 +68,7 @@ fn type_parser<'src>() -> impl Parser<'src, &'src str, String> {
         ))
         .padded()
     })
-    .map(|s| format!("{QUALIFIED_POLYTYPE}::from({s})"))
+    .map(|s| format!("{QUALIFIED_POLYTYPE}::new_generalized({s})"))
 }
 
 #[proc_macro]

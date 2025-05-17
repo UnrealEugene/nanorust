@@ -34,7 +34,7 @@ fn test_file() {
                 return;
             }
             println!("Type: {}", type_env.generalize(&type_result.unwrap_or_default()));
-            println!("AST: {:#?}", ast);
+            // println!("AST: {:#?}", ast);
             println!("Return value: {:?}", ast.0.eval(env));
         }
 

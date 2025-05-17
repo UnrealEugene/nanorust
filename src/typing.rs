@@ -226,6 +226,27 @@ impl<'src> HMType<'src> for Type<'src> {
 }
 
 impl<'src> Type<'src> {
+    pub fn has_unknowns(&self) -> bool {
+        match self {
+            Type::Reference { ty, .. } => ty.has_unknowns(),
+            Type::Tuple(elems) => elems
+                .iter()
+                .map(|ty| ty.has_unknowns())
+                .reduce(|x, y| x || y)
+                .unwrap_or(false),
+            Type::Function(args, ret) => {
+                args.iter()
+                    .map(|ty| ty.has_unknowns())
+                    .reduce(|x, y| x || y)
+                    .unwrap_or(false)
+                    || ret.has_unknowns()
+            }
+            Type::LValue { ty, .. } => ty.has_unknowns(),
+            Type::Unknown => true,
+            _ => false,
+        }
+    }
+
     fn replace_unknowns(self, gen: &mut TypeVarGen) -> Self {
         match self {
             Type::Builtin(_) => self,
@@ -247,6 +268,41 @@ impl<'src> Type<'src> {
                 ty: Box::new(ty.replace_unknowns(gen)),
             },
             Type::Unknown => Type::Variable(gen.next()),
+        }
+    }
+
+    fn bind_variables(self, type_vars: &Vec<Identifier<'src>>) -> Self {
+        match self {
+            Type::Builtin(_) => self,
+            Type::Concrete(name) => {
+                if let Some(i) = type_vars.iter().rev().position(|p| p.0 == name.0) {
+                    Type::Variable(TypeVar(type_vars.len() - i - 1))
+                } else {
+                    Type::Concrete(name)
+                }
+            }
+            Type::Variable(_) => panic!("type already has bound variables"),
+            Type::Reference { is_mut, ty } => Type::Reference {
+                is_mut,
+                ty: Box::new(ty.bind_variables(type_vars)),
+            },
+            Type::Tuple(elems) => Type::Tuple(
+                elems
+                    .into_iter()
+                    .map(|e| e.bind_variables(type_vars))
+                    .collect(),
+            ),
+            Type::Function(args, ret) => Type::Function(
+                args.into_iter()
+                    .map(|e| e.bind_variables(type_vars))
+                    .collect(),
+                Box::new(ret.bind_variables(type_vars)),
+            ),
+            Type::LValue { is_mut, ty } => Type::LValue {
+                is_mut,
+                ty: Box::new(ty.bind_variables(type_vars)),
+            },
+            Type::Unknown => self,
         }
     }
 
@@ -274,6 +330,8 @@ impl<'src> Type<'src> {
 
     fn unify(&self, other: &Self) -> Result<Subst<'src>> {
         match (self, other) {
+            (Type::LValue { is_mut: _, ty: ty1 }, ty2) => ty1.unify(ty2),
+            (ty1, Type::LValue { is_mut: _, ty: ty2 }) => ty1.unify(ty2),
             (Type::Builtin(t1), Type::Builtin(t2)) if t1 == t2 => Ok(Subst::new()),
             (Type::Concrete(t1), Type::Concrete(t2)) if t1.0 == t2.0 => Ok(Subst::new()),
             (Type::Variable(var), t) => var.bind(t),
@@ -298,8 +356,6 @@ impl<'src> Type<'src> {
                 let subst2 = ret1.substitute(&subst1).unify(&ret2.substitute(&subst1))?;
                 Ok(subst1.compose(&subst2))
             }
-            (Type::LValue { is_mut: _, ty: ty1 }, ty2) => ty1.unify(ty2),
-            (ty1, Type::LValue { is_mut: _, ty: ty2 }) => ty1.unify(ty2),
             (ty1, ty2) => Err(TypeError::new(format!("type mismatch: {} vs {}", ty1, ty2))),
         }
     }
@@ -386,10 +442,18 @@ impl<'src> Polytype<'src> {
         ))
     }
 
-    pub fn from(ty: Type<'src>) -> Self {
+    pub fn new_generalized(ty: Type<'src>) -> Self {
         Polytype {
             vars: ty.get_free_vars().iter().cloned().collect(),
             ty,
+        }
+    }
+
+    pub fn from(type_vars: Vec<Identifier<'src>>, ty: Type<'src>) -> Self {
+        let ty_bound = ty.bind_variables(&type_vars);
+        Polytype {
+            vars: (0..type_vars.len()).into_iter().map(TypeVar).collect(),
+            ty: ty_bound,
         }
     }
 
@@ -460,9 +524,8 @@ impl<'src> Subst<'src> {
 
 #[derive(Debug, Clone)]
 pub struct TypeEnv<'src> {
-    start_gen: TypeVarGen,
     stack: Vec<LetType<'src>>,
-    fun_type_list: Vec<Type<'src>>,
+    fun_type_list: Vec<Polytype<'src>>,
     fun_ret_stack: Vec<Type<'src>>,
 }
 
@@ -473,7 +536,6 @@ impl<'src> HMType<'src> for TypeEnv<'src> {
 
     fn substitute(&self, subst: &Subst<'src>) -> Self {
         TypeEnv {
-            start_gen: self.start_gen.clone(),
             stack: self.stack.iter().map(|t| t.substitute(subst)).collect(),
             fun_type_list: self
                 .fun_type_list
@@ -667,10 +729,10 @@ impl<'g, 'src, I: TupleChain<'src>> TypeEnvMonad<'g, 'src, I> {
         self.push_any(ty)
     }
 
-    fn push_type_from_env<F: FnOnce(&TypeEnv<'src>) -> Type<'src>>(
+    fn push_from_env<R, F: FnOnce(&TypeEnv<'src>) -> R>(
         self,
         f: F,
-    ) -> TypeEnvMonad<'g, 'src, (I, Type<'src>)> {
+    ) -> TypeEnvMonad<'g, 'src, (I, R)> {
         TypeEnvMonad(self.0.map(|st| {
             let new_val = f(&st.env);
             st.map_val(|st_val| (st_val, new_val))
@@ -706,13 +768,11 @@ impl<'g, 'src, I: TupleChain<'src>> TypeEnvMonad<'g, 'src, I> {
 
 impl<'src> TypeEnv<'src> {
     pub fn new(fun_list: Vec<Rc<Function<'src>>>) -> Self {
-        let mut gen = TypeVarGen::new();
         let mut fun_type_list = Vec::new();
         for func in fun_list.iter() {
-            fun_type_list.push(func.ty.borrow().clone().instantiate(&mut gen));
+            fun_type_list.push(func.ty.borrow().clone());
         }
         TypeEnv {
-            start_gen: gen,
             stack: Vec::new(),
             fun_type_list,
             fun_ret_stack: Vec::new(),
@@ -762,7 +822,7 @@ impl<'src> TypeEnv<'src> {
                             ty: Box::new(ty.clone()),
                         },
                     },
-                    Pointer::Function(i) => self.fun_type_list.get(i).unwrap().clone(),
+                    Pointer::Function(i) => self.fun_type_list.get(i).unwrap().instantiate(gen),
                     _ => unreachable!(),
                 },
             )),
@@ -888,7 +948,8 @@ impl<'src> TypeEnv<'src> {
                 cont,
             } => self
                 .monad(gen)
-                .push_type_from_env(|env| env.fun_type_list.get(index.get()).unwrap().clone())
+                .push_from_env(|env| env.fun_type_list.get(index.get()).unwrap().clone())
+                .instantiated()
                 .mutate_env(|env, (_, func_ty)| {
                     let (args_ty, ret_ty) = func_ty.unwrap_function_ref();
                     for ty in args_ty.iter() {
@@ -960,7 +1021,7 @@ impl<'src> TypeEnv<'src> {
             Expr::Return(expr) => self
                 .monad(gen)
                 .infer_type(expr)
-                .push_type_from_env(|env| env.fun_ret_stack.last().unwrap().clone())
+                .push_from_env(|env| env.fun_ret_stack.last().unwrap().clone())
                 .unify(|((_, t1), t2)| (t1, t2))
                 .return_never(),
             Expr::While(cond, body) => self
@@ -989,7 +1050,7 @@ impl<'src> TypeEnv<'src> {
     }
 
     pub fn infer_type(&self, expr: &Spanned<Expr<'src>>) -> Result<Type<'src>> {
-        let mut gen = self.start_gen.clone();
+        let mut gen = TypeVarGen::new();
         self.infer_type_impl(expr, &mut gen).map(|(_, ty)| ty)
     }
 }

@@ -191,7 +191,30 @@ pub struct Function<'src> {
 }
 
 impl<'src> Function<'src> {
-    pub fn new(vars: Vec<Variable<'src>>, ret_type: Type<'src>, body: Spanned<Expr<'src>>) -> Self {
+    pub fn new_function(
+        type_vars: Vec<Identifier<'src>>,
+        vars: Vec<Variable<'src>>,
+        ret_type: Type<'src>,
+        body: Spanned<Expr<'src>>,
+    ) -> Self {
+        let (var_names, var_types) = vars
+            .into_iter()
+            .map(|var| (var.name, var.ty.into_inner()))
+            .unzip();
+        let func_ty = Type::Function(var_types, Box::new(ret_type));
+        assert!(!func_ty.has_unknowns(), "explicit types are required in function signatures");
+        Function {
+            args: var_names,
+            body: Box::new(body),
+            ty: RefCell::new(Polytype::from(type_vars, func_ty)),
+        }
+    }
+
+    pub fn new_closure(
+        vars: Vec<Variable<'src>>,
+        ret_type: Type<'src>,
+        body: Spanned<Expr<'src>>,
+    ) -> Self {
         let (var_names, var_types) = vars
             .into_iter()
             .map(|var| (var.name, var.ty.into_inner()))

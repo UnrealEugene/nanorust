@@ -4,7 +4,8 @@ use crate::{
     expr::*,
     lexer::Token,
     span::{span_wrap, Spanned},
-    typing::{BuiltinType, Polytype, Type}, value::{BinaryOp, Function, Pointer, UnaryOp, Value},
+    typing::{BuiltinType, Polytype, Type},
+    value::{BinaryOp, Function, Pointer, UnaryOp, Value},
 };
 use alloc::{boxed::Box, rc::Rc, vec::Vec};
 use chumsky::{input::ValueInput, prelude::*};
@@ -224,6 +225,14 @@ where
                 .collect::<Vec<_>>()
                 .boxed();
 
+            let param_list = ident
+                .clone()
+                .separated_by(just(Token::Ctrl(',')))
+                .allow_trailing()
+                .collect::<Vec<_>>()
+                .delimited_by(just(Token::Op("<")), just(Token::Op(">")))
+                .boxed();
+
             let expr = recursive(|expr| {
                 let lambda = var_list
                     .clone()
@@ -233,7 +242,7 @@ where
                     .then(expr.clone())
                     .map(|((args, ret_type), body)| {
                         Expr::Closure(
-                            Rc::new(Function::new(args, ret_type, body)),
+                            Rc::new(Function::new_closure(args, ret_type, body)),
                             RefCell::default(),
                         )
                     })
@@ -459,17 +468,25 @@ where
 
             let func_stmt = just(Token::Fn)
                 .ignore_then(ident.clone())
+                .then(param_list.clone().or_not().map(Option::unwrap_or_default))
                 .then(
                     var_list
                         .clone()
                         .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
                 )
-                .then(ret_type.clone().or_not().map(Option::unwrap_or_default))
+                .then(
+                    ret_type
+                        .clone()
+                        .or_not()
+                        .map(|ret| ret.unwrap_or_else(|| Type::unit())),
+                )
                 .then(block.clone())
-                .map(|(((name, args), ret_type), body)| Expr::Function {
-                    name,
-                    func: Rc::new(Function::new(args, ret_type, body)),
-                })
+                .map(
+                    |((((name, params), args), ret_type), body)| Expr::Function {
+                        name,
+                        func: Rc::new(Function::new_function(params, args, ret_type, body)),
+                    },
+                )
                 .map_with(span_wrap)
                 .boxed();
 
