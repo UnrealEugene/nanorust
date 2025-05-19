@@ -185,6 +185,7 @@ impl<'src> Pointer<'src> {
 
 #[derive(Debug)]
 pub struct Function<'src> {
+    pub params: Vec<Identifier<'src>>,
     pub args: Vec<Identifier<'src>>,
     pub body: Box<Spanned<Expr<'src>>>,
     pub ty: RefCell<Polytype<'src>>,
@@ -192,7 +193,7 @@ pub struct Function<'src> {
 
 impl<'src> Function<'src> {
     pub fn new_function(
-        type_vars: Vec<Identifier<'src>>,
+        type_params: Vec<Identifier<'src>>,
         vars: Vec<Variable<'src>>,
         ret_type: Type<'src>,
         body: Spanned<Expr<'src>>,
@@ -204,9 +205,10 @@ impl<'src> Function<'src> {
         let func_ty = Type::Function(var_types, Box::new(ret_type));
         assert!(!func_ty.has_unknowns(), "explicit types are required in function signatures");
         Function {
+            params: type_params.clone(),
             args: var_names,
             body: Box::new(body),
-            ty: RefCell::new(Polytype::from(type_vars, func_ty)),
+            ty: RefCell::new(Polytype::from(type_params, func_ty)),
         }
     }
 
@@ -220,6 +222,7 @@ impl<'src> Function<'src> {
             .map(|var| (var.name, var.ty.into_inner()))
             .unzip();
         Function {
+            params: Vec::new(),
             args: var_names,
             body: Box::new(body),
             ty: RefCell::new(Polytype::from_unknown(Type::Function(

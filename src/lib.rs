@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![no_std]
+// #![no_std]
 
 extern crate alloc;
 extern crate core;

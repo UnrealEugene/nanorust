@@ -1,5 +1,9 @@
-fn f<T>(x: T, y: T) -> T { 
-    x + y // ??? compiles
+// inferred: 
+//   for<T, S> fn(T, S) -> (T, S)
+fn f<T>(x: T, y: T) -> (T, T) {
+    let a: T = x;
+    let b = y;
+    (a, b)
 }
 
 f

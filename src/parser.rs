@@ -112,6 +112,14 @@ impl BuiltinType {
 
 pub type Identifier<'src> = Spanned<&'src str>;
 
+impl<'src> PartialEq for Identifier<'src> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl<'src> Eq for Identifier<'src> {}
+
 #[derive(Debug)]
 pub struct Variable<'src, T = Type<'src>> {
     pub name: Identifier<'src>,
