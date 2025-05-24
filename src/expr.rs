@@ -9,19 +9,23 @@ use hashbrown::HashMap;
 use crate::{
     parser::{Identifier, Variable},
     span::Spanned,
-    typing::Polytype,
+    typing::{Polytype, Type},
     value::{BinaryOp, Function, Pointer, UnaryOp, Value},
 };
 
 #[derive(Debug)]
 pub enum Expr<'src> {
     Error,
-    Skip,                                              // Void
-    Block(Box<Spanned<Self>>),                         // any
-    Ignore(Box<Spanned<Self>>),                        // Void
-    Location(Cell<(Pointer<'src>, usize)>, &'src str), // Value
-    Constant(Value<'src>),                             // Value
-    Tuple(Vec<Spanned<Self>>),                         // Value
+    Skip,                       // Void
+    Block(Box<Spanned<Self>>),  // any
+    Ignore(Box<Spanned<Self>>), // Void
+    Location {
+        name: Identifier<'src>,
+        ptr_cell: Cell<(Pointer<'src>, usize)>,
+        bindings: Vec<Type<'src>>,
+    }, // Value
+    Constant(Value<'src>),      // Value
+    Tuple(Vec<Spanned<Self>>),  // Value
     Reference {
         is_mut: bool,
         expr: Box<Spanned<Self>>,
@@ -30,10 +34,10 @@ pub enum Expr<'src> {
         is_mut: bool,
         expr: Box<Spanned<Self>>,
     }, // Value
-    Unary(UnaryOp, Box<Spanned<Self>>),                // Value
+    Unary(UnaryOp, Box<Spanned<Self>>), // Value
     Binary(BinaryOp, Box<Spanned<Self>>, Box<Spanned<Self>>), // Value
-    Assign(Box<Spanned<Self>>, Box<Spanned<Self>>),    // Void
-    Seq(Box<Spanned<Self>>, Box<Spanned<Self>>),       // any
+    Assign(Box<Spanned<Self>>, Box<Spanned<Self>>), // Void
+    Seq(Box<Spanned<Self>>, Box<Spanned<Self>>), // any
     Let {
         var: Variable<'src, Polytype<'src>>,
         is_mut: bool,
@@ -55,23 +59,23 @@ pub enum Expr<'src> {
         func: Rc<Function<'src>>,
         cont: Box<Spanned<Self>>,
     }, // any
-    Cast(Box<Spanned<Self>>, Polytype<'src>),          // Value
+    Cast(Box<Spanned<Self>>, Polytype<'src>), // Value
     If {
         cond: Box<Spanned<Self>>,
         if_false: Box<Spanned<Self>>,
         if_true: Box<Spanned<Self>>,
     }, // any
     Closure(Rc<Function<'src>>, RefCell<HashMap<String, Pointer<'src>>>), // Value
-    Call(Box<Spanned<Self>>, Vec<Spanned<Self>>),      // Value
-    Return(Box<Spanned<Self>>),                        // Void
-    While(Box<Spanned<Self>>, Box<Spanned<Self>>),     // Void
+    Call(Box<Spanned<Self>>, Vec<Spanned<Self>>), // Value
+    Return(Box<Spanned<Self>>), // Void
+    While(Box<Spanned<Self>>, Box<Spanned<Self>>), // Void
     For {
         var: Variable<'src>,
         iter: Box<Spanned<Self>>,
         body: Box<Spanned<Self>>,
     }, // Void
-    Continue,                                          // Void
-    Break,                                             // Void
+    Continue,                   // Void
+    Break,                      // Void
 }
 
 impl<'src> Default for Expr<'src> {
@@ -120,7 +124,7 @@ impl<'src> Expr<'src> {
             Expr::Skip => true,
             Expr::Block(inner) => inner.0.is_unit(),
             Expr::Ignore(..) => true,
-            Expr::Location(..) => false, // can't decide solely from AST
+            Expr::Location { .. } => false, // can't decide solely from AST
             Expr::Constant(..) => false,
             Expr::Tuple(..) => false,
             Expr::Reference { .. } => false,
@@ -162,7 +166,7 @@ impl<'src> Expr<'src> {
             Expr::Ignore(expr) => {
                 walker = Self::walk(expr.as_ref(), walker);
             }
-            Expr::Location(..) => {}
+            Expr::Location { .. } => {}
             Expr::Constant(..) => {}
             Expr::Tuple(elems) => {
                 for elem in elems.iter() {

@@ -150,10 +150,10 @@ where
 
                 let type_tuple = type_
                     .clone()
-                    .separated_by(just(Token::Ctrl(',')))
+                    .separated_by(just(Token::Ctrl(",")))
                     .allow_trailing()
                     .collect::<Vec<_>>()
-                    .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')));
+                    .delimited_by(just(Token::Ctrl("(")), just(Token::Ctrl(")")));
 
                 choice((
                     type_ref,
@@ -167,7 +167,7 @@ where
                         .map(|(args, res)| Type::Function(args, Box::new(res))),
                     type_
                         .clone()
-                        .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
+                        .delimited_by(just(Token::Ctrl("(")), just(Token::Ctrl(")"))),
                     type_tuple.map(Type::Tuple),
                 ))
                 .labelled("type")
@@ -176,7 +176,7 @@ where
             let var = ident
                 .clone()
                 .then(
-                    just(Token::Ctrl(':'))
+                    just(Token::Ctrl(":"))
                         .labelled("type annotation")
                         .ignore_then(type_.clone())
                         .or_not()
@@ -199,7 +199,7 @@ where
 
             let block = stmt
                 .clone()
-                .delimited_by(just(Token::Ctrl('{')), just(Token::Ctrl('}')))
+                .delimited_by(just(Token::Ctrl("{")), just(Token::Ctrl("}")))
                 .map(|opt: Spanned<Option<Expr>>| {
                     Expr::Block(Box::new(opt.map(Option::unwrap_or_default)))
                 })
@@ -228,14 +228,14 @@ where
 
             let var_list = var
                 .clone()
-                .separated_by(just(Token::Ctrl(',')))
+                .separated_by(just(Token::Ctrl(",")))
                 .allow_trailing()
                 .collect::<Vec<_>>()
                 .boxed();
 
             let param_list = ident
                 .clone()
-                .separated_by(just(Token::Ctrl(',')))
+                .separated_by(just(Token::Ctrl(",")))
                 .allow_trailing()
                 .collect::<Vec<_>>()
                 .delimited_by(just(Token::Op("<")), just(Token::Op(">")))
@@ -244,7 +244,7 @@ where
             let expr = recursive(|expr| {
                 let lambda = var_list
                     .clone()
-                    .delimited_by(just(Token::Ctrl('|')), just(Token::Ctrl('|')))
+                    .delimited_by(just(Token::Ctrl("|")), just(Token::Ctrl("|")))
                     .or(just(Token::Op("||")).map(|_| Vec::new()))
                     .then(ret_type.clone().or_not().map(Option::unwrap_or_default))
                     .then(expr.clone())
@@ -265,20 +265,42 @@ where
                     .map_with(span_wrap)
                     .boxed();
 
+                let param_bind_list = type_
+                    .clone()
+                    .separated_by(just(Token::Ctrl(",")))
+                    .at_least(1)
+                    .allow_trailing()
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::Op("<")), just(Token::Op(">")))
+                    .boxed();
+
+                let location = ident
+                    .clone()
+                    .then(
+                        just(Token::Ctrl("::"))
+                            .ignore_then(param_bind_list.clone())
+                            .or_not()
+                            .map(Option::unwrap_or_default),
+                    )
+                    .map(|(name, bindings)| Expr::Location {
+                        name,
+                        ptr_cell: Cell::new((Pointer::Invalid, 0)),
+                        bindings,
+                    })
+                    .boxed();
+
                 let atom = choice((
                     num.map(|x| Expr::Constant(Value::Number(x))),
                     bool_.map(|x| Expr::Constant(Value::Boolean(x))),
-                    ident
-                        .clone()
-                        .map(|var| Expr::Location(Cell::new((Pointer::Invalid, 0)), var.0)),
+                    location.clone(),
                     expr.clone()
-                        .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
+                        .delimited_by(just(Token::Ctrl("(")), just(Token::Ctrl(")")))
                         .map(|s| s.0),
                     expr.clone()
-                        .separated_by(just(Token::Ctrl(',')))
+                        .separated_by(just(Token::Ctrl(",")))
                         .allow_trailing()
                         .collect::<Vec<_>>()
-                        .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
+                        .delimited_by(just(Token::Ctrl("(")), just(Token::Ctrl(")")))
                         .map(Expr::Tuple),
                 ))
                 .map_with(span_wrap)
@@ -287,7 +309,7 @@ where
 
                 let expr_list = expr
                     .clone()
-                    .separated_by(just(Token::Ctrl(',')))
+                    .separated_by(just(Token::Ctrl(",")))
                     .allow_trailing()
                     .collect::<Vec<_>>()
                     .boxed();
@@ -298,8 +320,8 @@ where
                         expr_list
                             .clone()
                             .delimited_by(
-                                just(Token::Ctrl('(')).labelled("function call"),
-                                just(Token::Ctrl(')')),
+                                just(Token::Ctrl("(")).labelled("function call"),
+                                just(Token::Ctrl(")")),
                             )
                             .repeated(),
                         |fn_expr, arg_list, e| {
@@ -480,7 +502,7 @@ where
                 .then(
                     var_list
                         .clone()
-                        .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
+                        .delimited_by(just(Token::Ctrl("(")), just(Token::Ctrl(")"))),
                 )
                 .then(
                     ret_type
@@ -526,7 +548,7 @@ where
                     .clone()
                     .or_not()
                     .then(
-                        just(Token::Ctrl(';'))
+                        just(Token::Ctrl(";"))
                             .labelled("semicolon")
                             .ignore_then(stmt.clone())
                             .or_not(),

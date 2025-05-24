@@ -129,6 +129,10 @@ impl<'src> FunStack<'src> {
     fn to_function_list(self) -> Vec<Rc<Function<'src>>> {
         self.fun_list
     }
+
+    fn get_function(&self, index: usize) -> Option<Rc<Function<'src>>> {
+        self.fun_list.get(index).cloned()
+    }
 }
 
 impl<'src> Expr<'src> {
@@ -145,44 +149,58 @@ impl<'src> Expr<'src> {
                 fun_stack.pop_scope(sym_stack);
                 false
             }
-            Expr::Location(cell, var) => {
+            Expr::Location {
+                name,
+                ptr_cell,
+                bindings,
+            } => {
                 let (index, func_index, _, var_depth) = sym_stack
-                    .find_var(var)
-                    .unwrap_or_else(|| panic!("undefined variable `{}`", var));
+                    .find_var(name.0)
+                    .unwrap_or_else(|| panic!("undefined variable `{}`", name.0));
 
                 if let Some(i) = func_index {
-                    cell.set((Pointer::Function(i), var_depth));
+                    let func = fun_stack.get_function(i).unwrap();
+                    if bindings.len() > 0 && func.ty.borrow().get_bind_arity() != bindings.len() {
+                        panic!(
+                            "function `{}` type parameters bindings count mismatch: expected {}, actual {}",
+                            name.0,
+                            func.ty.borrow().get_bind_arity(),
+                            bindings.len()
+                        );
+                    }
+                    ptr_cell.set((Pointer::Function(i), var_depth));
                     return true;
                 };
 
                 let depth = sym_stack.depth();
-                let mut ptr = Pointer::Relative(sym_stack.index_at_depth(var, var_depth).unwrap());
+                let mut ptr =
+                    Pointer::Relative(sym_stack.index_at_depth(name.0, var_depth).unwrap());
                 for d in var_depth..depth {
                     cap_stack[d]
                         .borrow_mut()
-                        .entry(var.to_string())
+                        .entry(name.0.to_string())
                         .or_insert(ptr);
-                    ptr = Pointer::Capture(sym_stack.closure_stack_size(d + 1), index, var);
+                    ptr = Pointer::Capture(sym_stack.closure_stack_size(d + 1), index, name.0);
                 }
-                cell.set((ptr, var_depth));
+                ptr_cell.set((ptr, var_depth));
                 true
             }
             Expr::Reference { is_mut, expr } => {
                 Self::set_up_impl(expr.as_ref(), sym_stack, fun_stack, cap_stack);
-                let Expr::Location(_, var) = &expr.0 else {
+                let Expr::Location { name, .. } = &expr.0 else {
                     panic!("getting address of arbitrary expression is not supported");
                 };
-                let var_is_mut = sym_stack.find_var(var).map(|x| x.2).unwrap();
+                let var_is_mut = sym_stack.find_var(name.0).map(|x| x.2).unwrap();
                 if *is_mut && !var_is_mut {
-                    panic!("cannot mutate immutable variable {}", var)
+                    panic!("cannot mutate immutable variable `{}`", name.0)
                 }
                 false
             }
             Expr::Assign(lhs, _) => {
                 match &lhs.as_ref().0 {
-                    Expr::Location(_, var) => {
-                        if !sym_stack.find_var(var).map(|x| x.2).unwrap() {
-                            panic!("cannot mutate immutable variable {}", var)
+                    Expr::Location { name, .. } => {
+                        if !sym_stack.find_var(name.0).map(|x| x.2).unwrap() {
+                            panic!("cannot mutate immutable variable `{}`", name.0)
                         }
                     }
                     _ => {}
@@ -329,7 +347,7 @@ impl<'src> Expr<'src> {
             Expr::Skip => Flow::default(),
             Expr::Block(expr) => expr.0.eval_impl(env).map(|val| val.to_rvalue(env)),
             Expr::Ignore(expr) => expr.0.eval_impl(env).map(|_| CValue::default()),
-            Expr::Location(ptr, _) => ptr.get().0.to_lvalue().to_flow(),
+            Expr::Location { ptr_cell, .. } => ptr_cell.get().0.to_lvalue().to_flow(),
             Expr::Constant(val) => val.clone().to_flow(),
             Expr::Tuple(elems) => elems
                 .iter()
@@ -344,8 +362,8 @@ impl<'src> Expr<'src> {
                 .map(Value::Tuple)
                 .map(CValue::RValue),
             Expr::Reference { is_mut: _, expr } => {
-                if let Expr::Location(ptr, _) = &expr.as_ref().0 {
-                    return Value::Pointer(match ptr.get().0 {
+                if let Expr::Location { ptr_cell, .. } = &expr.as_ref().0 {
+                    return Value::Pointer(match ptr_cell.get().0 {
                         Pointer::Function(i) => Pointer::Function(i),
                         ptr => ptr.to_absolute(&env.stack),
                     })

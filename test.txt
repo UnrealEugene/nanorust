@@ -1,9 +1,9 @@
-// inferred: 
-//   for<T, S> fn(T, S) -> (T, S)
-fn f<T>(x: T, y: T) -> (T, T) {
-    let a: T = x;
-    let b = y;
-    (a, b)
+fn f<T>() -> T {
+    f()
 }
 
-f
+fn g() -> i32 {
+    f()
+}
+
+(f::<i32>, g)

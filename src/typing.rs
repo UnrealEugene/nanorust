@@ -116,6 +116,10 @@ impl TypeVarGen {
         TypeVarGen { supply: 0 }
     }
 
+    fn new_from_offset(offset: usize) -> Self {
+        TypeVarGen { supply: offset }
+    }
+
     fn next(&mut self) -> TypeVar {
         let res = self.supply;
         self.supply += 1;
@@ -272,7 +276,7 @@ impl<'src> Type<'src> {
         }
     }
 
-    fn bind_variables(self, type_vars: &Vec<Identifier<'src>>, offset: usize) -> Self {
+    fn instantiate(self, type_vars: &Vec<Identifier<'src>>, offset: usize) -> Self {
         match self {
             Type::Builtin(_) => self,
             Type::Concrete(name) => {
@@ -285,23 +289,23 @@ impl<'src> Type<'src> {
             Type::Variable(_) => self,
             Type::Reference { is_mut, ty } => Type::Reference {
                 is_mut,
-                ty: Box::new(ty.bind_variables(type_vars, offset)),
+                ty: Box::new(ty.instantiate(type_vars, offset)),
             },
             Type::Tuple(elems) => Type::Tuple(
                 elems
                     .into_iter()
-                    .map(|e| e.bind_variables(type_vars, offset))
+                    .map(|e| e.instantiate(type_vars, offset))
                     .collect(),
             ),
             Type::Function(args, ret) => Type::Function(
                 args.into_iter()
-                    .map(|e| e.bind_variables(type_vars, offset))
+                    .map(|e| e.instantiate(type_vars, offset))
                     .collect(),
-                Box::new(ret.bind_variables(type_vars, offset)),
+                Box::new(ret.instantiate(type_vars, offset)),
             ),
             Type::LValue { is_mut, ty } => Type::LValue {
                 is_mut,
-                ty: Box::new(ty.bind_variables(type_vars, offset)),
+                ty: Box::new(ty.instantiate(type_vars, offset)),
             },
             Type::Unknown => self,
         }
@@ -526,7 +530,7 @@ impl<'src> Polytype<'src> {
     }
 
     pub fn from(type_vars: Vec<Identifier<'src>>, ty: Type<'src>) -> Self {
-        let ty_bound = ty.bind_variables(&type_vars, 0);
+        let ty_bound = ty.instantiate(&type_vars, 0);
         Polytype {
             vars: (0..type_vars.len()).into_iter().map(TypeVar).collect(),
             ty: ty_bound,
@@ -540,6 +544,28 @@ impl<'src> Polytype<'src> {
             vars: new_ty.get_free_vars().iter().cloned().collect(),
             ty: new_ty,
         }
+    }
+
+    pub fn bind_params(&self, bindings: &Vec<Type<'src>>) -> Self {
+        let offset = self.ty.next_free_var();
+        let mut gen = TypeVarGen::new_from_offset(offset);
+        let subst = Subst(
+            self.vars
+                .iter()
+                .cloned()
+                .zip(
+                    bindings
+                        .iter()
+                        .cloned()
+                        .map(|ty| ty.replace_unknowns(&mut gen)),
+                )
+                .collect(),
+        );
+        Self::new_generalized(self.ty.substitute(&subst))
+    }
+
+    pub fn get_bind_arity(&self) -> usize {
+        self.vars.len()
     }
 }
 
@@ -903,20 +929,37 @@ impl<'src> TypeEnv<'src> {
             Expr::Skip => Ok((Subst::new(), Type::unit())),
             Expr::Block(inner) => self.infer_type_impl(inner, gen),
             Expr::Ignore(inner) => self.monad(gen).infer_type(inner).return_unit(),
-            Expr::Location(ptr, _) => Ok((
+            Expr::Location {
+                name,
+                ptr_cell,
+                bindings,
+            } => Ok((
                 Subst::new(),
-                match ptr.get().0.to_absolute_sym(self.sym_stack.len()) {
+                match ptr_cell.get().0.to_absolute_sym(self.sym_stack.len()) {
                     Pointer::Absolute(i) => match self.sym_stack.get(i).unwrap() {
                         LetType::Let(ty) => Type::LValue {
                             is_mut: false,
-                            ty: Box::new(ty.instantiate(gen)),
+                            ty: Box::new(ty.bind_params(bindings).instantiate(gen)),
                         },
-                        LetType::LetMut(ty) => Type::LValue {
-                            is_mut: true,
-                            ty: Box::new(ty.clone()),
-                        },
+                        LetType::LetMut(ty) => {
+                            if bindings.len() > 0 {
+                                return Err(TypeError::new(format!(
+                                    "cannot bind type parameters to a mutable variable `{}`",
+                                    name.0
+                                )));
+                            }
+                            Type::LValue {
+                                is_mut: true,
+                                ty: Box::new(ty.clone()),
+                            }
+                        }
                     },
-                    Pointer::Function(i) => self.fun_type_list.get(i).unwrap().instantiate(gen),
+                    Pointer::Function(i) => self
+                        .fun_type_list
+                        .get(i)
+                        .unwrap()
+                        .bind_params(bindings)
+                        .instantiate(gen),
                     _ => unreachable!(),
                 },
             )),
@@ -1064,7 +1107,7 @@ impl<'src> TypeEnv<'src> {
                     let inferred_ty = Type::Function(args_ty, Box::new(ret_ty));
                     let offset = inferred_ty.next_free_var();
                     let _ = inferred_ty
-                        .bind_variables(&func.params, offset)
+                        .instantiate(&func.params, offset)
                         .is_generalization_of(&func_ty)?;
                     Ok(())
                 })

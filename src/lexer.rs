@@ -10,7 +10,7 @@ pub enum Token<'src> {
     Bool(bool),
     Num(i32),
     Op(&'src str),
-    Ctrl(char),
+    Ctrl(&'src str),
     Ident(&'src str),
     Fn,
     Let,
@@ -97,11 +97,23 @@ pub fn lexer<'src>(
         just("!"),
         just("&"),
     ))
-    .map(|s| Token::Op(s))
+    .map(Token::Op)
     .labelled("operator")
     .boxed();
 
-    let ctrl = one_of("(){}[]|:;,").map(Token::Ctrl).boxed();
+    let ctrl = choice((
+        just("("),
+        just(")"),
+        just("{"),
+        just("}"),
+        just("["),
+        just("]"),
+        just("|"),
+        just("::"),
+        just(":"),
+        just(";"),
+        just(","),
+    )).map(Token::Ctrl).labelled("control symbol").boxed();
 
     let ident = text::ident()
         .map(|ident: &'src str| match ident {
