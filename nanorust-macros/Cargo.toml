@@ -1,10 +1,10 @@
 [package]
-name = "hex-coding-macros"
+name = "nanorust-macros"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "hex_coding_macros"
+name = "nanorust_macros"
 path = "src/lib.rs"
 proc-macro = true
 

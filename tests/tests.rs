@@ -2,11 +2,11 @@ use std::path::Path;
 
 use ariadne::{sources, Color, Label, Report, ReportKind};
 use chumsky::prelude::*;
-use hex_coding::{expr::Expr, lexer::lexer, parser::*, typing::TypeEnv};
+use nanorust::{expr::Expr, lexer::lexer, parser::*, typing::TypeEnv};
 
 #[test]
 fn test_file() {
-    let file_path = Path::new("E:\\Projects\\Rust\\hex-coding\\test.txt");
+    let file_path = Path::new("E:\\Projects\\Rust\\nanorust\\test.txt");
     
     let file_name = file_path.file_name().unwrap().to_str().unwrap().to_string();
 

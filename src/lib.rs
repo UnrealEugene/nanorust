@@ -3,9 +3,9 @@
 
 extern crate alloc;
 extern crate core;
-extern crate hex_coding_macros;
+extern crate nanorust_macros;
 
-extern crate self as hex_coding;
+extern crate self as nanorust;
 
 pub mod span;
 pub mod lexer;

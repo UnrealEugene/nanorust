@@ -11,7 +11,7 @@ use alloc::string::String;
 use alloc::{boxed::Box, vec::Vec};
 use alloc::{format, vec};
 use hashbrown::HashSet;
-use hex_coding_macros::ty;
+use nanorust_macros::ty;
 
 use crate::parser::Identifier;
 use crate::value::{Function, Pointer, Value};

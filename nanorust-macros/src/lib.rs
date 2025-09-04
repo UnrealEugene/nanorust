@@ -3,10 +3,10 @@ use chumsky::prelude::*;
 use proc_macro::TokenStream;
 
 const QUALIFIED_BOX: &str = "::alloc::boxed::Box";
-const QUALIFIED_TYPE_VAR: &str = "::hex_coding::typing::TypeVar";
-const QUALIFIED_BUILTIN_TYPE: &str = "::hex_coding::typing::BuiltinType";
-const QUALIFIED_TYPE: &str = "::hex_coding::typing::Type";
-const QUALIFIED_POLYTYPE: &str = "::hex_coding::typing::Polytype::<'static>";
+const QUALIFIED_TYPE_VAR: &str = "::nanorust::typing::TypeVar";
+const QUALIFIED_BUILTIN_TYPE: &str = "::nanorust::typing::BuiltinType";
+const QUALIFIED_TYPE: &str = "::nanorust::typing::Type";
+const QUALIFIED_POLYTYPE: &str = "::nanorust::typing::Polytype::<'static>";
 
 fn vec_to_code(vec: Vec<String>) -> String {
     let mut inside_str = String::new();

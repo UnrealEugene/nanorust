@@ -1,7 +1,7 @@
-workspace = { members = ["hex-coding-macros"] }
+workspace = { members = ["nanorust-macros"] }
 
 [package]
-name = "hex-coding"
+name = "nanorust"
 version = "0.1.0"
 edition = "2021"
 resolver = "2"
@@ -11,4 +11,4 @@ ariadne = "0.5.0"
 chumsky = { version = "1.0.0-alpha.8", features = ["serde"] } 
 hashbrown = "0.15.2"
 serde = "1.0.217"
-hex-coding-macros = { path = "./hex-coding-macros" }
+nanorust-macros = { path = "./nanorust-macros" }

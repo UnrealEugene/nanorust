@@ -14,7 +14,7 @@ use crate::{
     typing::{Polytype, Type},
 };
 
-use hex_coding_macros::ty;
+use nanorust_macros::ty;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
