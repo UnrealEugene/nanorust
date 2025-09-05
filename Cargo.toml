@@ -12,3 +12,9 @@ chumsky = { version = "1.0.0-alpha.8", features = ["serde"] }
 hashbrown = "0.15.2"
 serde = "1.0.217"
 nanorust-macros = { path = "./nanorust-macros" }
+clap = { version = "4.5.47", features = ["derive"] }
+slog = "2.7.0"
+slog-term = "2.9.2"
+slog-async = "2.8.0"
+slog-scope = "4.4.0"
+yansi = "1.0.1"

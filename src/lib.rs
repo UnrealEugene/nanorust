@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
-// #![no_std]
+#![no_std]
 
+extern crate slog;
+extern crate slog_term;
 extern crate alloc;
 extern crate core;
 extern crate nanorust_macros;

@@ -4,13 +4,13 @@
 use core::fmt::{self, Display};
 use core::hash::Hash;
 use core::result;
-use std::collections::HashMap;
 
 use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::{boxed::Box, vec::Vec};
 use alloc::{format, vec};
-use hashbrown::HashSet;
+
+use hashbrown::{HashMap, HashSet};
 use nanorust_macros::ty;
 
 use crate::parser::Identifier;
@@ -424,7 +424,6 @@ impl<'src> Type<'src> {
     }
 
     fn is_generalization_of(&self, other: &Type<'src>) -> Result<Subst<'src>> {
-        println!("{} | {}", self, other);
         match (self, other) {
             (Type::LValue { is_mut: _, ty: ty1 }, ty2) => ty1.is_generalization_of(ty2),
             (ty1, Type::LValue { is_mut: _, ty: ty2 }) => ty1.is_generalization_of(ty2),
