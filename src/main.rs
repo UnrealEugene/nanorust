@@ -10,7 +10,7 @@ use std::{error::Error, fmt::Display, io, ops::Range, path::Path, process::ExitC
 use ariadne::{Color, FnCache, Label, Report, ReportKind, Source};
 use chumsky::{error::Rich, input::Input};
 use clap::{Args, Parser, Subcommand};
-use nanorust::expr::Expr;
+use nanorust::{expr::Expr, ir::{InterpretEnv, IR}};
 use slog::Drain;
 use yansi::Paint;
 
@@ -170,9 +170,15 @@ fn interpret_string<'a, 'src>(source: &'src str, name: &'a str) -> Result<Interp
     }
     let ast = ast.unwrap();
     info!("sucessfully produced AST for {}", name);
+    debug!("AST: {:?}", ast);
 
-    let env = Expr::set_up(&ast);
-    let value = ast.0.eval(env);
+    // let env = Expr::set_up(&ast);
+    // let value = ast.0.eval(env);
+
+    let ir = IR::from_ast(&ast);
+    debug!("IR: {:?}", ir.root());
+    let mut env = InterpretEnv::new();
+    let value = env.interpret(&ir);
 
     Ok(InterpretResult::Value(format!("{:?}", value)))
 }
