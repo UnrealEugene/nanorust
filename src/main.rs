@@ -10,7 +10,11 @@ use std::{error::Error, fmt::Display, io, ops::Range, path::Path, process::ExitC
 use ariadne::{Color, FnCache, Label, Report, ReportKind, Source};
 use chumsky::{error::Rich, input::Input};
 use clap::{Args, Parser, Subcommand};
-use nanorust::{expr::Expr, ir::{InterpretEnv, IR}};
+use nanorust::{
+    ir::{Builtin, InterpretEnv, RValue, IR},
+    lexer::Token,
+    span::Spanned,
+};
 use slog::Drain;
 use yansi::Paint;
 
@@ -128,7 +132,10 @@ fn build_error_reports<'a, 'src, T: Display>(
         .collect()
 }
 
-fn interpret_string<'a, 'src>(source: &'src str, name: &'a str) -> Result<InterpretResult<'a>> {
+fn parse_into_tokens<'a, 'src>(
+    source: &'src str,
+    name: &'a str,
+) -> std::result::Result<Vec<Spanned<Token<'src>>>, InterpretResult<'a>> {
     let (tokens, lexing_errors) =
         chumsky::Parser::parse(&nanorust::lexer::lexer(), source).into_output_errors();
     if !lexing_errors.is_empty() {
@@ -138,17 +145,42 @@ fn interpret_string<'a, 'src>(source: &'src str, name: &'a str) -> Result<Interp
             plural(lexing_errors.len(), "error"),
             name
         );
-        return Ok(InterpretResult::Report(build_error_reports(
+        return Err(InterpretResult::Report(build_error_reports(
             name,
             lexing_errors,
         )));
     }
     let tokens = tokens.unwrap();
     info!(
-        "sucessfully parsed {} for {}",
+        "successfully parsed {} for {}",
         plural(tokens.len(), "token"),
         name
     );
+    Ok(tokens)
+}
+
+fn op_i32(f: impl Fn(i32, i32) -> i32 + 'static) -> Builtin {
+    Box::new(move |args| {
+        let left = args[0].clone().unwrap_number(0)?;
+        let right = args[1].clone().unwrap_number(1)?;
+        Ok(RValue::Number(f(left, right)))
+    })
+}
+
+fn interpret_string<'a, 'src>(source: &'src str, name: &'a str) -> Result<InterpretResult<'a>> {
+    let prelude_source = include_str!("../data/prelude.nrs");
+    let prelude_tokens = match parse_into_tokens(prelude_source, "prelude.nrs") {
+        Ok(tokens) => tokens,
+        Err(error) => return Ok(error),
+    };
+    let tokens = match parse_into_tokens(source, name) {
+        Ok(tokens) => tokens,
+        Err(error) => return Ok(error),
+    };
+    let tokens = [prelude_tokens, tokens]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
 
     let (ast, parsing_errors) = chumsky::Parser::parse(
         &nanorust::parser::parse_stmt(),
@@ -175,7 +207,14 @@ fn interpret_string<'a, 'src>(source: &'src str, name: &'a str) -> Result<Interp
     // let env = Expr::set_up(&ast);
     // let value = ast.0.eval(env);
 
-    let ir = IR::from_ast(&ast);
+    let mut ir: IR<'_> = IR::from_ast(&ast);
+
+    ir.register_builtin("__add", op_i32(i32::wrapping_add));
+    ir.register_builtin("__sub", op_i32(i32::wrapping_sub));
+    ir.register_builtin("__mul", op_i32(i32::wrapping_mul));
+    ir.register_builtin("__div", op_i32(i32::wrapping_div));
+    ir.register_builtin("__rem", op_i32(i32::wrapping_rem));
+
     debug!("IR: {:?}", ir.root());
     let mut env = InterpretEnv::new();
     let value = env.interpret(&ir);

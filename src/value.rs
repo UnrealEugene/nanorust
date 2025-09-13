@@ -128,6 +128,26 @@ impl BinaryOp {
             BinaryOp::RangeInclusive => ty!("fn(i32, i32) -> range"),
         }
     }
+
+    pub fn get_builtin_name(&self) -> &'static str {
+        match self {
+            BinaryOp::Add => "__add",
+            BinaryOp::Subtract => "__sub",
+            BinaryOp::Multiply => "__mul",
+            BinaryOp::Divide => "__div",
+            BinaryOp::Modulo => "__rem",
+            BinaryOp::Equal => "__eq",
+            BinaryOp::NotEqual => "__ne",
+            BinaryOp::LessEqual => "__le",
+            BinaryOp::GreaterEqual => "__ge",
+            BinaryOp::Less => "__lt",
+            BinaryOp::Greater => "__gt",
+            BinaryOp::LogicOr => "__or",
+            BinaryOp::LogicAnd => "__and",
+            BinaryOp::Range => todo!(),
+            BinaryOp::RangeInclusive => todo!(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
