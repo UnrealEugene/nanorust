@@ -927,40 +927,41 @@ impl<'src> TypeEnv<'src> {
             Expr::Error => unreachable!(),
             Expr::Skip => Ok((Subst::new(), Type::unit())),
             Expr::Block(inner) => self.infer_type_impl(inner, gen),
-            Expr::Ignore(inner) => self.monad(gen).infer_type(inner).return_unit(),
+            // Expr::Ignore(inner) => self.monad(gen).infer_type(inner).return_unit(),
             Expr::Location {
                 name,
-                ptr_cell,
+                // ptr_cell,
                 bindings,
             } => Ok((
                 Subst::new(),
-                match ptr_cell.get().0.to_absolute_sym(self.sym_stack.len()) {
-                    Pointer::Absolute(i) => match self.sym_stack.get(i).unwrap() {
-                        LetType::Let(ty) => Type::LValue {
-                            is_mut: false,
-                            ty: Box::new(ty.bind_params(bindings).instantiate(gen)),
-                        },
-                        LetType::LetMut(ty) => {
-                            if bindings.len() > 0 {
-                                return Err(TypeError::new(format!(
-                                    "cannot bind type parameters to a mutable variable `{}`",
-                                    name.0
-                                )));
-                            }
-                            Type::LValue {
-                                is_mut: true,
-                                ty: Box::new(ty.clone()),
-                            }
-                        }
-                    },
-                    Pointer::Function(i) => self
-                        .fun_type_list
-                        .get(i)
-                        .unwrap()
-                        .bind_params(bindings)
-                        .instantiate(gen),
-                    _ => unreachable!(),
-                },
+                // match ptr_cell.get().0.to_absolute_sym(self.sym_stack.len()) {
+                //     Pointer::Absolute(i) => match self.sym_stack.get(i).unwrap() {
+                //         LetType::Let(ty) => Type::LValue {
+                //             is_mut: false,
+                //             ty: Box::new(ty.bind_params(bindings).instantiate(gen)),
+                //         },
+                //         LetType::LetMut(ty) => {
+                //             if bindings.len() > 0 {
+                //                 return Err(TypeError::new(format!(
+                //                     "cannot bind type parameters to a mutable variable `{}`",
+                //                     name.0
+                //                 )));
+                //             }
+                //             Type::LValue {
+                //                 is_mut: true,
+                //                 ty: Box::new(ty.clone()),
+                //             }
+                //         }
+                //     },
+                //     Pointer::Function(i) => self
+                //         .fun_type_list
+                //         .get(i)
+                //         .unwrap()
+                //         .bind_params(bindings)
+                //         .instantiate(gen),
+                //     _ => unreachable!(),
+                // },
+                Type::unit()
             )),
             Expr::Constant(val) => Ok((
                 Subst::new(),
@@ -1045,73 +1046,73 @@ impl<'src> TypeEnv<'src> {
                 .infer_type(second)
                 .return_last(),
             Expr::Let { .. } => unreachable!(),
-            Expr::VarScope {
-                var,
-                is_mut,
-                val,
-                cont,
-            } => {
-                let monad = self
-                    .monad(gen)
-                    .push_polytype(var.ty.borrow().clone())
-                    .instantiated()
-                    .infer_type(val)
-                    .unify(|((_, val_ty), var_ty)| (val_ty, var_ty));
-                if *is_mut {
-                    monad
-                        .mutate_env(|env, (_, t)| env.sym_stack.push(LetType::LetMut(t.clone())))
-                        .infer_type(cont)
-                        .mutate_env(|env, _| {
-                            env.sym_stack.pop();
-                        })
-                        .return_last()
-                } else {
-                    monad
-                        .generalized()
-                        .mutate_env(|env, (_, t)| env.sym_stack.push(LetType::Let(t.clone())))
-                        .infer_type(cont)
-                        .mutate_env(|env, _| {
-                            env.sym_stack.pop();
-                        })
-                        .return_last()
-                }
-            }
+            // Expr::VarScope {
+            //     var,
+            //     is_mut,
+            //     val,
+            //     cont,
+            // } => {
+            //     let monad = self
+            //         .monad(gen)
+            //         .push_polytype(var.ty.borrow().clone())
+            //         .instantiated()
+            //         .infer_type(val)
+            //         .unify(|((_, val_ty), var_ty)| (val_ty, var_ty));
+            //     if *is_mut {
+            //         monad
+            //             .mutate_env(|env, (_, t)| env.sym_stack.push(LetType::LetMut(t.clone())))
+            //             .infer_type(cont)
+            //             .mutate_env(|env, _| {
+            //                 env.sym_stack.pop();
+            //             })
+            //             .return_last()
+            //     } else {
+            //         monad
+            //             .generalized()
+            //             .mutate_env(|env, (_, t)| env.sym_stack.push(LetType::Let(t.clone())))
+            //             .infer_type(cont)
+            //             .mutate_env(|env, _| {
+            //                 env.sym_stack.pop();
+            //             })
+            //             .return_last()
+            //     }
+            // }
             Expr::Function { .. } => unreachable!(),
-            Expr::FunScope {
-                name: _,
-                index,
-                func,
-                cont,
-            } => self
-                .monad(gen)
-                .gen_fresh_types(func.args.len())
-                .gen_fresh_type()
-                .mutate_env(|env, ((_, args_ty), ret_ty)| {
-                    for ty in args_ty.iter() {
-                        env.sym_stack.push(LetType::LetMut(ty.clone()));
-                    }
-                    env.fun_ret_stack.push(ret_ty.clone())
-                })
-                .infer_type(&func.body)
-                .mutate_env(|env, (((_, args_ty), _), _)| {
-                    for _ in args_ty.iter() {
-                        env.sym_stack.pop();
-                    }
-                    env.fun_ret_stack.pop();
-                })
-                .unify(|((_, ret_ty), body_ty)| (ret_ty, body_ty))
-                .push_from_env(|env| env.fun_type_list.get(index.get()).unwrap().clone())
-                .instantiated()
-                .and_then(|((((_, args_ty), ret_ty), _), func_ty)| {
-                    let inferred_ty = Type::Function(args_ty, Box::new(ret_ty));
-                    let offset = inferred_ty.next_free_var();
-                    let _ = inferred_ty
-                        .instantiate(&func.params, offset)
-                        .is_generalization_of(&func_ty)?;
-                    Ok(())
-                })
-                .infer_type(cont)
-                .return_last(),
+            // Expr::FunScope {
+            //     name: _,
+            //     index,
+            //     func,
+            //     cont,
+            // } => self
+            //     .monad(gen)
+            //     .gen_fresh_types(func.args.len())
+            //     .gen_fresh_type()
+            //     .mutate_env(|env, ((_, args_ty), ret_ty)| {
+            //         for ty in args_ty.iter() {
+            //             env.sym_stack.push(LetType::LetMut(ty.clone()));
+            //         }
+            //         env.fun_ret_stack.push(ret_ty.clone())
+            //     })
+            //     .infer_type(&func.body)
+            //     .mutate_env(|env, (((_, args_ty), _), _)| {
+            //         for _ in args_ty.iter() {
+            //             env.sym_stack.pop();
+            //         }
+            //         env.fun_ret_stack.pop();
+            //     })
+            //     .unify(|((_, ret_ty), body_ty)| (ret_ty, body_ty))
+            //     .push_from_env(|env| env.fun_type_list.get(index.get()).unwrap().clone())
+            //     .instantiated()
+            //     .and_then(|((((_, args_ty), ret_ty), _), func_ty)| {
+            //         let inferred_ty = Type::Function(args_ty, Box::new(ret_ty));
+            //         let offset = inferred_ty.next_free_var();
+            //         let _ = inferred_ty
+            //             .instantiate(&func.params, offset)
+            //             .is_generalization_of(&func_ty)?;
+            //         Ok(())
+            //     })
+            //     .infer_type(cont)
+            //     .return_last(),
             Expr::Cast(arg, ty) => self
                 .monad(gen)
                 .infer_type(arg)

@@ -18,6 +18,10 @@ impl<T> Spanned<T> {
 }
 
 impl<T: Default> Spanned<T> {
+    
+}
+
+impl<T: Default> Spanned<T> {
     pub fn unwrap_or_default(opt: Option<Spanned<T>>, span: SimpleSpan) -> Spanned<T> {
         opt.unwrap_or(Spanned(Default::default(), span.to_end()))
     }

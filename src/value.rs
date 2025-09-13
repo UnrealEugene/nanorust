@@ -7,7 +7,6 @@ use alloc::{boxed::Box, rc::Rc, string::String, vec::Vec};
 use hashbrown::HashMap;
 
 use crate::{
-    eval::{Environment, EvalStack},
     expr::Expr,
     parser::{Identifier, Variable},
     span::Spanned,
@@ -160,21 +159,21 @@ pub enum Pointer<'src> {
 }
 
 impl<'src> Pointer<'src> {
-    pub fn to_absolute(self, stack: &EvalStack<'src>) -> Self {
-        match self {
-            Pointer::Relative(i) => Pointer::Absolute(stack.len() - i - 1),
-            Pointer::Absolute(_) => self,
-            Pointer::Function(_) => self,
-            Pointer::Capture(i, _, var) => *stack
-                .get_relative(i)
-                .unwrap()
-                .unwrap_closure_ref()
-                .1
-                .get(var)
-                .unwrap(),
-            Pointer::Invalid => unreachable!(),
-        }
-    }
+    // pub fn to_absolute(self, stack: &EvalStack<'src>) -> Self {
+    //     match self {
+    //         Pointer::Relative(i) => Pointer::Absolute(stack.len() - i - 1),
+    //         Pointer::Absolute(_) => self,
+    //         Pointer::Function(_) => self,
+    //         Pointer::Capture(i, _, var) => *stack
+    //             .get_relative(i)
+    //             .unwrap()
+    //             .unwrap_closure_ref()
+    //             .1
+    //             .get(var)
+    //             .unwrap(),
+    //         Pointer::Invalid => unreachable!(),
+    //     }
+    // }
 
     pub fn to_absolute_sym(self, stack_len: usize) -> Self {
         match self {
@@ -223,7 +222,10 @@ impl<'src> Function<'src> {
             .map(|var| (var.name, var.ty.into_inner()))
             .unzip();
         let func_ty = Type::Function(var_types, Box::new(ret_type));
-        assert!(!func_ty.has_unknowns(), "explicit types are required in function signatures");
+        assert!(
+            !func_ty.has_unknowns(),
+            "explicit types are required in function signatures"
+        );
         Function {
             params: type_params.clone(),
             args: var_names,
@@ -294,13 +296,13 @@ impl<'src> Value<'src> {
         }
     }
 
-    pub fn to_function(&self, env: &Environment<'src>) -> Rc<Function<'src>> {
-        match self {
-            Value::Function(i) => env.functions.get(*i).unwrap().clone(),
-            Value::Closure(func, _) => func.clone(),
-            _ => panic!("unwrap of non-functional value {:?}", self),
-        }
-    }
+    // pub fn to_function(&self, env: &Environment<'src>) -> Rc<Function<'src>> {
+    //     match self {
+    //         Value::Function(i) => env.functions.get(*i).unwrap().clone(),
+    //         Value::Closure(func, _) => func.clone(),
+    //         _ => panic!("unwrap of non-functional value {:?}", self),
+    //     }
+    // }
 
     pub fn unwrap_closure_ref(&self) -> (Rc<Function<'src>>, &HashMap<String, Pointer<'src>>) {
         match &self {
@@ -313,16 +315,16 @@ impl<'src> Value<'src> {
         Flow::Normal(CValue::RValue(self))
     }
 
-    pub fn init_closure_captures(
-        captures: &RefCell<HashMap<String, Pointer<'src>>>,
-        stack: &EvalStack<'src>,
-    ) -> HashMap<String, Pointer<'src>> {
-        let mut res = HashMap::new();
-        captures.borrow().iter().for_each(|(var, ptr)| {
-            res.insert(var.clone(), ptr.to_absolute(stack));
-        });
-        res
-    }
+    // pub fn init_closure_captures(
+    //     captures: &RefCell<HashMap<String, Pointer<'src>>>,
+    //     stack: &EvalStack<'src>,
+    // ) -> HashMap<String, Pointer<'src>> {
+    //     let mut res = HashMap::new();
+    //     captures.borrow().iter().for_each(|(var, ptr)| {
+    //         res.insert(var.clone(), ptr.to_absolute(stack));
+    //     });
+    //     res
+    // }
 }
 
 #[derive(Debug, Clone)]
@@ -338,12 +340,12 @@ impl<'src> Default for CValue<'src> {
 }
 
 impl<'src> CValue<'src> {
-    pub fn to_rvalue(self, env: &Environment<'src>) -> Self {
-        match self {
-            CValue::LValue(ptr) => CValue::RValue(env.get(ptr).unwrap().clone()),
-            CValue::RValue(_) => self,
-        }
-    }
+    // pub fn to_rvalue(self, env: &Environment<'src>) -> Self {
+    //     match self {
+    //         CValue::LValue(ptr) => CValue::RValue(env.get(ptr).unwrap().clone()),
+    //         CValue::RValue(_) => self,
+    //     }
+    // }
 
     pub fn to_flow(self) -> Flow<'src> {
         Flow::Normal(self)
@@ -363,9 +365,9 @@ impl<'src> CValue<'src> {
         }
     }
 
-    pub fn unwrap(self, env: &Environment<'src>) -> Value<'src> {
-        self.to_rvalue(env).unwrap_rvalue()
-    }
+    // pub fn unwrap(self, env: &Environment<'src>) -> Value<'src> {
+    //     self.to_rvalue(env).unwrap_rvalue()
+    // }
 }
 
 pub enum Flow<'src, R = CValue<'src>> {

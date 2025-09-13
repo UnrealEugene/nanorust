@@ -221,12 +221,6 @@ impl<'src> IR<'src> {
                     nodes: if scope.is_empty() { vec![node] } else { scope },
                 })
             }
-            Expr::Ignore(expr) => {
-                let node = Self::from_ast_impl(expr.as_ref(), builder);
-                Node::new(Tree::Ignore {
-                    node: Box::new(node),
-                })
-            }
             Expr::Location { name, .. } => Node::new(Tree::Constant {
                 value: Value::LValue(builder.resolve_symbol(name.0)),
             }),
@@ -259,19 +253,16 @@ impl<'src> IR<'src> {
                 let second_node = Self::from_ast_impl(second.as_ref(), builder);
                 match &second.as_ref().0 {
                     Expr::Seq(..) => {}
-                    Expr::VarScope { .. } => {}
-                    Expr::FunScope { .. } => {}
                     _ => {
                         builder.push_node(second_node);
                     }
                 }
                 Node::default()
             }
-            Expr::VarScope {
+            Expr::Let {
                 var,
                 is_mut: _,
                 val,
-                cont,
             } => {
                 let value_node = Self::from_ast_impl(val.as_ref(), builder);
                 builder.push_node(Node::new(Tree::Let {
@@ -279,20 +270,9 @@ impl<'src> IR<'src> {
                     value: Box::new(value_node),
                 }));
                 builder.push_symbol(var.name.0, IRSymbol::Variable);
-                let cont_node = Self::from_ast_impl(cont.as_ref(), builder);
-                match &cont.as_ref().0 {
-                    Expr::Seq(..) => {}
-                    Expr::VarScope { .. } => {}
-                    Expr::FunScope { .. } => {}
-                    _ => {
-                        builder.push_node(cont_node);
-                    }
-                }
                 Node::default()
             }
-            Expr::FunScope {
-                name, func, cont, ..
-            } => {
+            Expr::Function { name, func, .. } => {
                 let args: Vec<_> = func.args.iter().map(|a| a.0).collect();
                 let func_symbol = IRSymbol::Function {
                     index: builder.func_table.len(),
@@ -307,7 +287,7 @@ impl<'src> IR<'src> {
                 builder.push_frame(args);
 
                 let body_node = Self::from_ast_impl(&func.body, builder);
-                
+
                 builder.pop_frame();
                 let mut func_symbol = builder.pop_symbol();
                 if let IRSymbol::Function { ref mut info, .. } = func_symbol {
@@ -318,15 +298,6 @@ impl<'src> IR<'src> {
                 builder.push_symbol(name.0, func_symbol);
 
                 builder.func_table.push(None);
-                let cont_node = Self::from_ast_impl(cont.as_ref(), builder);
-                match &cont.as_ref().0 {
-                    Expr::Seq(..) => {}
-                    Expr::VarScope { .. } => {}
-                    Expr::FunScope { .. } => {}
-                    _ => {
-                        builder.push_node(cont_node);
-                    }
-                }
                 Node::default()
             }
             Expr::Call(callee, args) => Node::new(Tree::Call {
@@ -377,10 +348,6 @@ impl<'src> Node<'src> {
 pub enum Tree<'src> {
     Constant {
         value: Value,
-    },
-
-    Ignore {
-        node: Box<Node<'src>>,
     },
 
     Scope {
@@ -443,10 +410,6 @@ impl<'src> InterpretEnv<'src> {
     ) -> Result<Value, InterpretError> {
         Ok(match &node.borrow().tree {
             Tree::Constant { value } => value.clone(),
-            Tree::Ignore { node } => {
-                let _ = self.interpret_node(node, ir)?;
-                Value::unit()
-            }
             Tree::Scope { nodes } => {
                 let stack_len = self.var_stack.len();
                 let x = nodes

@@ -14,6 +14,6 @@ pub mod lexer;
 pub mod parser;
 pub mod value;
 pub mod expr;
-pub mod eval;
+// pub mod eval;
 pub mod typing;
 pub mod ir;

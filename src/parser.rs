@@ -1,11 +1,11 @@
-use core::cell::{Cell, RefCell};
+use core::cell::RefCell;
 
 use crate::{
     expr::*,
     lexer::Token,
     span::{span_wrap, Spanned},
     typing::{BuiltinType, Polytype, Type},
-    value::{BinaryOp, Function, Pointer, UnaryOp, Value},
+    value::{BinaryOp, Function, UnaryOp, Value},
 };
 use alloc::{boxed::Box, rc::Rc, vec::Vec};
 use chumsky::{input::ValueInput, prelude::*};
@@ -282,11 +282,7 @@ where
                             .or_not()
                             .map(Option::unwrap_or_default),
                     )
-                    .map(|(name, bindings)| Expr::Location {
-                        name,
-                        ptr_cell: Cell::new((Pointer::Invalid, 0)),
-                        bindings,
-                    })
+                    .map(|(name, bindings)| Expr::Location { name, bindings })
                     .boxed();
 
                 let atom = choice((
@@ -478,7 +474,7 @@ where
                 .ignore_then(expr.clone())
                 .then(block.clone())
                 .map(|(cond_expr, inner_expr)| {
-                    Expr::While(Box::new(cond_expr), Box::new(Expr::new_ignore(inner_expr)))
+                    Expr::While(Box::new(cond_expr), Box::new(inner_expr))
                 })
                 .map_with(span_wrap)
                 .boxed();
@@ -539,7 +535,10 @@ where
                 .then(stmt.clone())
                 .map(|(first_expr, second_opt)| {
                     Some(match second_opt.0 {
-                        Some(_) => Expr::new_seq(first_expr, second_opt.map(Option::unwrap)),
+                        Some(_) => Expr::Seq(
+                            Box::new(first_expr),
+                            Box::new(second_opt.map(Option::unwrap)),
+                        ),
                         None => first_expr.0,
                     })
                 })
@@ -555,9 +554,9 @@ where
                     )
                     .map_with(|(first_opt, second_opt), e| match (first_opt, second_opt) {
                         (Some(first_expr), Some(second_expr)) => Spanned(
-                            Some(Expr::new_seq(
-                                first_expr,
-                                second_expr.map(Option::unwrap_or_default),
+                            Some(Expr::Seq(
+                                Box::new(first_expr),
+                                Box::new(second_expr.map(Option::unwrap_or_default)),
                             )),
                             e.span(),
                         ),
@@ -565,23 +564,6 @@ where
                         (None, Some(second_expr)) => second_expr,
                         (None, None) => Spanned(None, e.span().to_end()),
                     }))
-                .map_with(|opt: Spanned<Option<Expr>>, e| {
-                    opt.map(|opt| match opt {
-                        Some(Expr::Let { var, is_mut, val }) => Some(Expr::VarScope {
-                            var,
-                            is_mut,
-                            val,
-                            cont: Box::new(Spanned(Default::default(), e.span().to_end())),
-                        }),
-                        Some(Expr::Function { name, func }) => Some(Expr::FunScope {
-                            name,
-                            index: Cell::new(0),
-                            func,
-                            cont: Box::new(Spanned(Default::default(), e.span().to_end())),
-                        }),
-                        _ => opt,
-                    })
-                })
         },
     )
     .map(|opt: Spanned<Option<Expr>>| opt.map(Option::unwrap_or_default))
