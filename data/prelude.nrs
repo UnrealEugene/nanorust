@@ -4,3 +4,13 @@ fn __sub(a: i32, b: i32) -> i32 { a - b }
 fn __mul(a: i32, b: i32) -> i32 { a * b }
 fn __div(a: i32, b: i32) -> i32 { a / b }
 fn __rem(a: i32, b: i32) -> i32 { a % b }
+fn __eq(a: i32, b: i32) -> bool { a == b }
+fn __ne(a: i32, b: i32) -> bool { a != b }
+fn __le(a: i32, b: i32) -> bool { a <= b }
+fn __ge(a: i32, b: i32) -> bool { a >= b }
+fn __lt(a: i32, b: i32) -> bool { a < b }
+fn __gt(a: i32, b: i32) -> bool { a > b }
+fn __and(a: bool, b: bool) -> bool { a && b }
+fn __or(a: bool, b: bool) -> bool { a || b }
+
+fn println(args: any) { }

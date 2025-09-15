@@ -217,10 +217,10 @@ where
                                 .ignore_then(if_stmt.or(block.clone()))
                                 .or_not(),
                         )
-                        .map_with(|((cond, if_true), if_false), e| Expr::If {
+                        .map(|((cond, if_true), if_false)| Expr::If {
                             cond: Box::new(cond),
                             if_true: Box::new(if_true),
-                            if_false: Box::new(Spanned::unwrap_or_default(if_false, e.span())),
+                            if_false: if_false.map(Box::new),
                         })
                         .map_with(span_wrap)
                 })
@@ -473,8 +473,9 @@ where
             let while_stmt = just(Token::While)
                 .ignore_then(expr.clone())
                 .then(block.clone())
-                .map(|(cond_expr, inner_expr)| {
-                    Expr::While(Box::new(cond_expr), Box::new(inner_expr))
+                .map(|(cond_expr, body_expr)| Expr::While {
+                    cond: Box::new(cond_expr),
+                    body: Box::new(body_expr),
                 })
                 .map_with(span_wrap)
                 .boxed();

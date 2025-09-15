@@ -1,3 +1,22 @@
-{
-    5 + 7
+fn pow2(p: i32) -> i32 {
+    let acc = 1;
+    while p > 0 {
+        acc = acc * 2;
+        p = p - 1;
+    }
+    acc
 }
+
+fn pow2_rec(p: i32) -> i32 {
+    if p <= 0 {
+        return 1
+    }
+    let acc = pow2_rec(p / 2);
+    acc = acc * acc;
+    if p % 2 == 1 {
+        acc = 2 * acc;
+    }
+    acc
+}
+
+pow2_rec(6)

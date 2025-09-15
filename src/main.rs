@@ -159,11 +159,27 @@ fn parse_into_tokens<'a, 'src>(
     Ok(tokens)
 }
 
-fn op_i32(f: impl Fn(i32, i32) -> i32 + 'static) -> Builtin {
+fn op_arith(f: impl Fn(i32, i32) -> i32 + 'static) -> Builtin {
     Box::new(move |args| {
         let left = args[0].clone().unwrap_number(0)?;
         let right = args[1].clone().unwrap_number(1)?;
         Ok(RValue::Number(f(left, right)))
+    })
+}
+
+fn op_cmp(f: impl Fn(&i32, &i32) -> bool + 'static) -> Builtin {
+    Box::new(move |args| {
+        let left = args[0].clone().unwrap_number(0)?;
+        let right = args[1].clone().unwrap_number(1)?;
+        Ok(RValue::Boolean(f(&left, &right)))
+    })
+}
+
+fn op_logic(f: impl Fn(bool, bool) -> bool + 'static) -> Builtin {
+    Box::new(move |args| {
+        let left = args[0].clone().unwrap_boolean(0)?;
+        let right = args[1].clone().unwrap_boolean(1)?;
+        Ok(RValue::Boolean(f(left, right)))
     })
 }
 
@@ -209,17 +225,42 @@ fn interpret_string<'a, 'src>(source: &'src str, name: &'a str) -> Result<Interp
 
     let mut ir: IR<'_> = IR::from_ast(&ast);
 
-    ir.register_builtin("__add", op_i32(i32::wrapping_add));
-    ir.register_builtin("__sub", op_i32(i32::wrapping_sub));
-    ir.register_builtin("__mul", op_i32(i32::wrapping_mul));
-    ir.register_builtin("__div", op_i32(i32::wrapping_div));
-    ir.register_builtin("__rem", op_i32(i32::wrapping_rem));
+    ir.register_builtin("__add", op_arith(i32::wrapping_add));
+    ir.register_builtin("__sub", op_arith(i32::wrapping_sub));
+    ir.register_builtin("__mul", op_arith(i32::wrapping_mul));
+    ir.register_builtin("__div", op_arith(i32::wrapping_div));
+    ir.register_builtin("__rem", op_arith(i32::wrapping_rem));
+    ir.register_builtin("__eq", op_cmp(i32::eq));
+    ir.register_builtin("__ne", op_cmp(i32::ne));
+    ir.register_builtin("__le", op_cmp(i32::le));
+    ir.register_builtin("__ge", op_cmp(i32::ge));
+    ir.register_builtin("__lt", op_cmp(i32::lt));
+    ir.register_builtin("__gt", op_cmp(i32::gt));
+    ir.register_builtin("__and", op_logic(|a, b| a && b));
+    ir.register_builtin("__or", op_logic(|a, b| a || b));
+
+    ir.register_builtin("println", |args| {
+        println!(
+            "{}",
+            args.iter()
+                .map(RValue::to_string)
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        Ok(RValue::default())
+    });
 
     debug!("IR: {:?}", ir.root());
     let mut env = InterpretEnv::new();
-    let value = env.interpret(&ir);
+    let result = env.interpret(&ir);
 
-    Ok(InterpretResult::Value(format!("{:?}", value)))
+    Ok(InterpretResult::Value(format!(
+        "{}",
+        match result {
+            Ok(value) => value.to_string(),
+            Err(error) => error.message().into(),
+        }
+    )))
 }
 
 fn interpret(args: InterpretCmd) -> Result<ExitCode> {

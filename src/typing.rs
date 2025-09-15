@@ -14,7 +14,7 @@ use hashbrown::{HashMap, HashSet};
 use nanorust_macros::ty;
 
 use crate::parser::Identifier;
-use crate::value::{Function, Pointer, Value};
+use crate::value::{Function, Value};
 use crate::{expr::Expr, span::Spanned};
 
 pub type Result<T> = result::Result<T, TypeError>;
@@ -409,57 +409,57 @@ impl<'src> Type<'src> {
         }
     }
 
-    fn is_generalization_of_vec(
-        left: &Vec<Type<'src>>,
-        right: &Vec<Type<'src>>,
-    ) -> Result<Subst<'src>> {
-        left.iter()
-            .zip(right.iter())
-            .fold(Ok(Subst::new()), |res, (t1, t2)| {
-                res.and_then(|subst1| {
-                    t1.is_generalization_of(t2)
-                        .and_then(|subst2| subst1.strict_compose(&subst2))
-                })
-            })
-    }
+    // fn is_generalization_of_vec(
+    //     left: &Vec<Type<'src>>,
+    //     right: &Vec<Type<'src>>,
+    // ) -> Result<Subst<'src>> {
+    //     left.iter()
+    //         .zip(right.iter())
+    //         .fold(Ok(Subst::new()), |res, (t1, t2)| {
+    //             res.and_then(|subst1| {
+    //                 t1.is_generalization_of(t2)
+    //                     .and_then(|subst2| subst1.strict_compose(&subst2))
+    //             })
+    //         })
+    // }
 
-    fn is_generalization_of(&self, other: &Type<'src>) -> Result<Subst<'src>> {
-        match (self, other) {
-            (Type::LValue { is_mut: _, ty: ty1 }, ty2) => ty1.is_generalization_of(ty2),
-            (ty1, Type::LValue { is_mut: _, ty: ty2 }) => ty1.is_generalization_of(ty2),
-            (Type::Builtin(t1), Type::Builtin(t2)) if t1 == t2 => Ok(Subst::new()),
-            (Type::Concrete(t1), Type::Concrete(t2)) if t1.0 == t2.0 => Ok(Subst::new()),
-            (Type::Variable(var), t) => var.bind(t),
-            (t, Type::Variable(_)) => Err(TypeError::new(format!(
-                "expected a type variable, found {}",
-                t
-            ))),
-            (
-                Type::Reference {
-                    is_mut: is_mut1,
-                    ty: ty1,
-                },
-                Type::Reference {
-                    is_mut: is_mut2,
-                    ty: ty2,
-                },
-            ) if is_mut1 == is_mut2 => ty1.is_generalization_of(ty2),
-            (Type::Tuple(ts1), Type::Tuple(ts2)) if ts1.len() == ts2.len() => {
-                Self::is_generalization_of_vec(ts1, ts2)
-            }
-            (Type::Function(args1, ret1), Type::Function(args2, ret2))
-                if args1.len() == args2.len() =>
-            {
-                let subst1 = Self::is_generalization_of_vec(args1, args2)?;
-                let subst2 = ret1.is_generalization_of(ret2)?;
-                subst1.strict_compose(&subst2)
-            }
-            (ty1, ty2) => Err(TypeError::new(format!(
-                "type mismatch 2: {} vs {}",
-                ty1, ty2
-            ))),
-        }
-    }
+    // fn is_generalization_of(&self, other: &Type<'src>) -> Result<Subst<'src>> {
+    //     match (self, other) {
+    //         (Type::LValue { is_mut: _, ty: ty1 }, ty2) => ty1.is_generalization_of(ty2),
+    //         (ty1, Type::LValue { is_mut: _, ty: ty2 }) => ty1.is_generalization_of(ty2),
+    //         (Type::Builtin(t1), Type::Builtin(t2)) if t1 == t2 => Ok(Subst::new()),
+    //         (Type::Concrete(t1), Type::Concrete(t2)) if t1.0 == t2.0 => Ok(Subst::new()),
+    //         (Type::Variable(var), t) => var.bind(t),
+    //         (t, Type::Variable(_)) => Err(TypeError::new(format!(
+    //             "expected a type variable, found {}",
+    //             t
+    //         ))),
+    //         (
+    //             Type::Reference {
+    //                 is_mut: is_mut1,
+    //                 ty: ty1,
+    //             },
+    //             Type::Reference {
+    //                 is_mut: is_mut2,
+    //                 ty: ty2,
+    //             },
+    //         ) if is_mut1 == is_mut2 => ty1.is_generalization_of(ty2),
+    //         (Type::Tuple(ts1), Type::Tuple(ts2)) if ts1.len() == ts2.len() => {
+    //             Self::is_generalization_of_vec(ts1, ts2)
+    //         }
+    //         (Type::Function(args1, ret1), Type::Function(args2, ret2))
+    //             if args1.len() == args2.len() =>
+    //         {
+    //             let subst1 = Self::is_generalization_of_vec(args1, args2)?;
+    //             let subst2 = ret1.is_generalization_of(ret2)?;
+    //             subst1.strict_compose(&subst2)
+    //         }
+    //         (ty1, ty2) => Err(TypeError::new(format!(
+    //             "type mismatch 2: {} vs {}",
+    //             ty1, ty2
+    //         ))),
+    //     }
+    // }
 
     fn unwrap_function_ref(&self) -> (&Vec<Type<'src>>, &Type<'src>) {
         match self {
@@ -611,23 +611,23 @@ impl<'src> Subst<'src> {
         new_self
     }
 
-    fn strict_compose(&self, other: &Self) -> Result<Self> {
-        let mut new_self = self.clone();
-        for (var, ty2) in other.0.iter() {
-            if !self.0.contains_key(var) {
-                new_self.0.insert(*var, ty2.clone());
-            } else {
-                let ty1 = self.0.get(var).unwrap();
-                if ty1 != ty2 {
-                    return Err(TypeError::new(format!(
-                        "type mismatch in generalization check: {} vs {}",
-                        ty1, ty2
-                    )));
-                }
-            }
-        }
-        Ok(new_self)
-    }
+    // fn strict_compose(&self, other: &Self) -> Result<Self> {
+    //     let mut new_self = self.clone();
+    //     for (var, ty2) in other.0.iter() {
+    //         if !self.0.contains_key(var) {
+    //             new_self.0.insert(*var, ty2.clone());
+    //         } else {
+    //             let ty1 = self.0.get(var).unwrap();
+    //             if ty1 != ty2 {
+    //                 return Err(TypeError::new(format!(
+    //                     "type mismatch in generalization check: {} vs {}",
+    //                     ty1, ty2
+    //                 )));
+    //             }
+    //         }
+    //     }
+    //     Ok(new_self)
+    // }
 
     fn difference<'a, I>(&self, vars: I) -> Self
     where
@@ -827,14 +827,14 @@ impl<'g, 'src, I: TupleChain<'src>> TypeEnvMonad<'g, 'src, I> {
         }))
     }
 
-    fn gen_fresh_types(self, count: usize) -> TypeEnvMonad<'g, 'src, (I, Vec<Type<'src>>)> {
-        TypeEnvMonad(self.0.map(|st| {
-            let new_vec = (0..count)
-                .map(|_| Type::Variable(st.gen.next()))
-                .collect::<Vec<_>>();
-            st.map_val(|st_val| (st_val, new_vec))
-        }))
-    }
+    // fn gen_fresh_types(self, count: usize) -> TypeEnvMonad<'g, 'src, (I, Vec<Type<'src>>)> {
+    //     TypeEnvMonad(self.0.map(|st| {
+    //         let new_vec = (0..count)
+    //             .map(|_| Type::Variable(st.gen.next()))
+    //             .collect::<Vec<_>>();
+    //         st.map_val(|st_val| (st_val, new_vec))
+    //     }))
+    // }
 
     fn push_any<R>(self, x: R) -> TypeEnvMonad<'g, 'src, (I, R)> {
         TypeEnvMonad(self.0.map(|st| st.map_val(|st_val| (st_val, x))))
@@ -889,7 +889,7 @@ impl<'src> TypeEnv<'src> {
     pub fn new(fun_list: Vec<Rc<Function<'src>>>) -> Self {
         let mut fun_type_list = Vec::new();
         for func in fun_list.iter() {
-            fun_type_list.push(func.ty.borrow().clone());
+            fun_type_list.push(func.ty.clone());
         }
         TypeEnv {
             sym_stack: Vec::new(),
@@ -929,9 +929,9 @@ impl<'src> TypeEnv<'src> {
             Expr::Block(inner) => self.infer_type_impl(inner, gen),
             // Expr::Ignore(inner) => self.monad(gen).infer_type(inner).return_unit(),
             Expr::Location {
-                name,
+                name: _name,
                 // ptr_cell,
-                bindings,
+                bindings: _bindings,
             } => Ok((
                 Subst::new(),
                 // match ptr_cell.get().0.to_absolute_sym(self.sym_stack.len()) {
@@ -961,7 +961,7 @@ impl<'src> TypeEnv<'src> {
                 //         .instantiate(gen),
                 //     _ => unreachable!(),
                 // },
-                Type::unit()
+                Type::unit(),
             )),
             Expr::Constant(val) => Ok((
                 Subst::new(),
@@ -1122,19 +1122,19 @@ impl<'src> TypeEnv<'src> {
                 .return_last(),
             Expr::If {
                 cond,
-                if_false,
                 if_true,
+                if_false: _,
             } => self
                 .monad(gen)
                 .infer_type(cond)
                 .unified_with(Type::Builtin(BuiltinType::Bool))
                 .infer_type(if_true)
-                .infer_type(if_false)
+                // .infer_type(&Spanned::unwrap_or_default(if_false.as_ref().map(Box::as_ref), expr.1))
                 .unify(|((_, t1), t2)| (t1, t2))
                 .return_last(),
             Expr::Closure(func, _) => self
                 .monad(gen)
-                .push_polytype(func.ty.borrow().clone())
+                .push_polytype(func.ty.clone())
                 .instantiated()
                 .mutate_env(|env, (_, func_ty)| {
                     let (args_ty, ret_ty) = func_ty.unwrap_function_ref();
@@ -1169,7 +1169,7 @@ impl<'src> TypeEnv<'src> {
                 .push_from_env(|env| env.fun_ret_stack.last().unwrap().clone())
                 .unify(|((_, t1), t2)| (t1, t2))
                 .return_never(),
-            Expr::While(cond, body) => self
+            Expr::While { cond, body } => self
                 .monad(gen)
                 .infer_type(cond)
                 .unified_with(Type::Builtin(BuiltinType::Bool))

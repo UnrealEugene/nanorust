@@ -1,7 +1,6 @@
-use core::{
-    cell::RefCell,
-    ops::{Range, RangeInclusive},
-};
+use core::
+    ops::{Range, RangeInclusive}
+;
 
 use alloc::{boxed::Box, rc::Rc, string::String, vec::Vec};
 use hashbrown::HashMap;
@@ -207,7 +206,7 @@ pub struct Function<'src> {
     pub params: Vec<Identifier<'src>>,
     pub args: Vec<Identifier<'src>>,
     pub body: Box<Spanned<Expr<'src>>>,
-    pub ty: RefCell<Polytype<'src>>,
+    pub ty: Polytype<'src>,
 }
 
 impl<'src> Function<'src> {
@@ -230,7 +229,7 @@ impl<'src> Function<'src> {
             params: type_params.clone(),
             args: var_names,
             body: Box::new(body),
-            ty: RefCell::new(Polytype::from(type_params, func_ty)),
+            ty: Polytype::from(type_params, func_ty),
         }
     }
 
@@ -247,10 +246,7 @@ impl<'src> Function<'src> {
             params: Vec::new(),
             args: var_names,
             body: Box::new(body),
-            ty: RefCell::new(Polytype::from_unknown(Type::Function(
-                var_types,
-                Box::new(ret_type),
-            ))),
+            ty: Polytype::from_unknown(Type::Function(var_types, Box::new(ret_type))),
         }
     }
 }

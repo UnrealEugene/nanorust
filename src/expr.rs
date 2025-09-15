@@ -45,13 +45,16 @@ pub enum Expr<'src> {
     Cast(Box<Spanned<Self>>, Polytype<'src>), // Value
     If {
         cond: Box<Spanned<Self>>,
-        if_false: Box<Spanned<Self>>,
         if_true: Box<Spanned<Self>>,
+        if_false: Option<Box<Spanned<Self>>>,
     }, // any
     Closure(Rc<Function<'src>>, RefCell<HashMap<String, Pointer<'src>>>), // Value
     Call(Box<Spanned<Self>>, Vec<Spanned<Self>>), // Value
     Return(Box<Spanned<Self>>), // Void
-    While(Box<Spanned<Self>>, Box<Spanned<Self>>), // Void
+    While {
+        cond: Box<Spanned<Self>>,
+        body: Box<Spanned<Self>>,
+    }, // Void
     For {
         var: Variable<'src>,
         iter: Box<Spanned<Self>>,
