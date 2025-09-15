@@ -13,7 +13,7 @@ use chumsky::{input::ValueInput, prelude::*};
 type ParseError<'src> = extra::Err<Rich<'src, Token<'src>>>;
 
 impl UnaryOp {
-    fn parse<'src, I>() -> impl Parser<'src, I, UnaryOp, ParseError<'src>> + Copy + Clone
+    fn parse<'src, I>() -> impl Parser<'src, I, Spanned<UnaryOp>, ParseError<'src>> + Copy + Clone
     where
         I: ValueInput<'src, Token = Token<'src>, Span = SimpleSpan>,
     {
@@ -22,11 +22,13 @@ impl UnaryOp {
             Token::Op(op) if op == "!" => UnaryOp::LogicNot,
         }
         .labelled("unary operator")
+        .map_with(span_wrap)
     }
 }
 
 impl BinaryOp {
-    fn parse_sum<'src, I>() -> impl Parser<'src, I, BinaryOp, ParseError<'src>> + Copy + Clone
+    fn parse_sum<'src, I>(
+    ) -> impl Parser<'src, I, Spanned<BinaryOp>, ParseError<'src>> + Copy + Clone
     where
         I: ValueInput<'src, Token = Token<'src>, Span = SimpleSpan>,
     {
@@ -35,9 +37,11 @@ impl BinaryOp {
             Token::Op(op) if op == "-" => BinaryOp::Subtract,
         }
         .labelled("binary operator")
+        .map_with(span_wrap)
     }
 
-    fn parse_product<'src, I>() -> impl Parser<'src, I, BinaryOp, ParseError<'src>> + Copy + Clone
+    fn parse_product<'src, I>(
+    ) -> impl Parser<'src, I, Spanned<BinaryOp>, ParseError<'src>> + Copy + Clone
     where
         I: ValueInput<'src, Token = Token<'src>, Span = SimpleSpan>,
     {
@@ -47,9 +51,11 @@ impl BinaryOp {
             Token::Op(op) if op == "%" => BinaryOp::Modulo,
         }
         .labelled("binary operator")
+        .map_with(span_wrap)
     }
 
-    fn parse_compare<'src, I>() -> impl Parser<'src, I, BinaryOp, ParseError<'src>> + Copy + Clone
+    fn parse_compare<'src, I>(
+    ) -> impl Parser<'src, I, Spanned<BinaryOp>, ParseError<'src>> + Copy + Clone
     where
         I: ValueInput<'src, Token = Token<'src>, Span = SimpleSpan>,
     {
@@ -62,9 +68,11 @@ impl BinaryOp {
             Token::Op(op) if op == ">" => BinaryOp::Greater,
         }
         .labelled("binary operator")
+        .map_with(span_wrap)
     }
 
-    fn parse_logic_and<'src, I>() -> impl Parser<'src, I, BinaryOp, ParseError<'src>> + Copy + Clone
+    fn parse_logic_and<'src, I>(
+    ) -> impl Parser<'src, I, Spanned<BinaryOp>, ParseError<'src>> + Copy + Clone
     where
         I: ValueInput<'src, Token = Token<'src>, Span = SimpleSpan>,
     {
@@ -72,9 +80,11 @@ impl BinaryOp {
             Token::Op(op) if op == "&&" => BinaryOp::LogicAnd,
         }
         .labelled("binary operator")
+        .map_with(span_wrap)
     }
 
-    fn parse_logic_or<'src, I>() -> impl Parser<'src, I, BinaryOp, ParseError<'src>> + Copy + Clone
+    fn parse_logic_or<'src, I>(
+    ) -> impl Parser<'src, I, Spanned<BinaryOp>, ParseError<'src>> + Copy + Clone
     where
         I: ValueInput<'src, Token = Token<'src>, Span = SimpleSpan>,
     {
@@ -82,9 +92,11 @@ impl BinaryOp {
             Token::Op(op) if op == "||" => BinaryOp::LogicOr,
         }
         .labelled("binary operator")
+        .map_with(span_wrap)
     }
 
-    fn parse_range<'src, I>() -> impl Parser<'src, I, BinaryOp, ParseError<'src>> + Copy + Clone
+    fn parse_range<'src, I>(
+    ) -> impl Parser<'src, I, Spanned<BinaryOp>, ParseError<'src>> + Copy + Clone
     where
         I: ValueInput<'src, Token = Token<'src>, Span = SimpleSpan>,
     {
@@ -93,6 +105,7 @@ impl BinaryOp {
             Token::Op(op) if op == ".." => BinaryOp::Range,
         }
         .labelled("binary operator")
+        .map_with(span_wrap)
     }
 }
 
@@ -107,7 +120,7 @@ impl BuiltinType {
             Token::Ident(n) if n == "range" => BuiltinType::Range,
         }
         .map(Type::Builtin)
-    }
+    }   
 }
 
 pub type Identifier<'src> = Spanned<&'src str>;
@@ -247,10 +260,11 @@ where
                     .delimited_by(just(Token::Ctrl("|")), just(Token::Ctrl("|")))
                     .or(just(Token::Op("||")).map(|_| Vec::new()))
                     .then(ret_type.clone().or_not().map(Option::unwrap_or_default))
+                    .map_with(|x, e| (x, e.span()))
                     .then(expr.clone())
-                    .map(|((args, ret_type), body)| {
+                    .map(|(((args, ret_type), decl_span), body)| {
                         Expr::Closure(
-                            Rc::new(Function::new_closure(args, ret_type, body)),
+                            Rc::new(Function::new_closure(args, ret_type, decl_span, body)),
                             RefCell::default(),
                         )
                     })
@@ -507,11 +521,12 @@ where
                         .or_not()
                         .map(|ret| ret.unwrap_or_else(|| Type::unit())),
                 )
+                .map_with(|x, e| (x, e.span()))
                 .then(block.clone())
                 .map(
-                    |((((name, params), args), ret_type), body)| Expr::Function {
+                    |(((((name, params), args), ret_type), decl_span), body)| Expr::Function {
                         name,
-                        func: Rc::new(Function::new_function(params, args, ret_type, body)),
+                        func: Rc::new(Function::new_function(params, args, ret_type, decl_span, body)),
                     },
                 )
                 .map_with(span_wrap)

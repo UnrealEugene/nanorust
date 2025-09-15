@@ -7,6 +7,8 @@ use chumsky::{
 #[derive(Debug, Clone)]
 pub struct Spanned<T>(pub T, pub SimpleSpan);
 
+impl<T: Copy> Copy for Spanned<T> {}
+
 impl<T> Spanned<T> {
     pub fn span(&self) -> SimpleSpan {
         self.1
@@ -17,9 +19,7 @@ impl<T> Spanned<T> {
     }
 }
 
-impl<T: Default> Spanned<T> {
-    
-}
+impl<T: Default> Spanned<T> {}
 
 impl<T: Default> Spanned<T> {
     pub fn unwrap_or_default(opt: Option<Spanned<T>>, span: SimpleSpan) -> Spanned<T> {

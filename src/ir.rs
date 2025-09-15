@@ -5,8 +5,9 @@ use alloc::{
     vec,
     vec::Vec,
 };
+use chumsky::span::{SimpleSpan, Span};
 
-use crate::{expr::Expr, span::Spanned};
+use crate::{expr::Expr, parser::Identifier, span::Spanned};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Reference {
@@ -118,8 +119,9 @@ pub enum FuncBody<'src> {
 }
 
 pub struct FuncInfo<'src> {
-    name: &'src str,
-    args: Vec<&'src str>,
+    name: Identifier<'src>,
+    args: Vec<Identifier<'src>>,
+    _span: SimpleSpan,
     global: bool,
     body: FuncBody<'src>,
 }
@@ -136,7 +138,7 @@ enum IRSymbol<'src> {
 
 struct IRBuilder<'src> {
     func_table: Vec<Option<FuncInfo<'src>>>,
-    symbol_stack: Vec<Vec<(&'src str, IRSymbol<'src>)>>,
+    symbol_stack: Vec<Vec<(Identifier<'src>, IRSymbol<'src>)>>,
     scope_stack: Vec<Vec<Node<'src>>>,
 }
 
@@ -169,7 +171,7 @@ impl<'src> IRBuilder<'src> {
         self.scope_stack.pop().unwrap()
     }
 
-    fn push_frame(&mut self, args: Vec<&'src str>) {
+    fn push_frame(&mut self, args: Vec<Identifier<'src>>) {
         self.symbol_stack.push(
             args.into_iter()
                 .map(|name| (name, IRSymbol::Variable))
@@ -181,7 +183,7 @@ impl<'src> IRBuilder<'src> {
         self.symbol_stack.pop();
     }
 
-    fn push_symbol(&mut self, name: &'src str, symbol: IRSymbol<'src>) {
+    fn push_symbol(&mut self, name: Identifier<'src>, symbol: IRSymbol<'src>) {
         self.symbol_stack.last_mut().unwrap().push((name, symbol));
     }
 
@@ -190,12 +192,12 @@ impl<'src> IRBuilder<'src> {
     }
 
     fn push_node(&mut self, node: Node<'src>) {
-        if node != Node::default() {
+        if !node.is_empty() {
             self.scope_stack.last_mut().unwrap().push(node)
         }
     }
 
-    fn resolve_symbol(&self, name: &'src str) -> Reference {
+    fn resolve_symbol(&self, name: Identifier<'src>) -> Reference {
         let mut var_index = 0usize;
         for (symbol_name, symbol) in self.symbol_stack.iter().flatten().rev() {
             if *symbol_name == name {
@@ -208,7 +210,7 @@ impl<'src> IRBuilder<'src> {
                 var_index += 1;
             }
         }
-        panic!("undefined identifier {}", name)
+        panic!("undefined identifier {}", name.0)
     }
 }
 
@@ -224,49 +226,70 @@ impl<'src> IR<'src> {
         let scope = builder.pop_scope();
         IR {
             func_table: builder.func_table.into_iter().map(Option::unwrap).collect(),
-            root: Node::new(Tree::Scope {
-                nodes: if scope.is_empty() { vec![node] } else { scope },
-            }),
+            root: Node::new(
+                Tree::Scope {
+                    nodes: if scope.is_empty() { vec![node] } else { scope },
+                },
+                ast.1,
+            ),
         }
     }
 
     fn from_ast_impl(expr: &Spanned<Expr<'src>>, builder: &mut IRBuilder<'src>) -> Node<'src> {
         match &expr.0 {
-            Expr::Skip => Node::default(),
+            Expr::Skip => Node::empty(expr.1),
             Expr::Block(expr) => {
                 builder.push_scope();
                 let node = Self::from_ast_impl(expr.as_ref(), builder);
                 let scope = builder.pop_scope();
-                Node::new(Tree::Scope {
-                    nodes: if scope.is_empty() { vec![node] } else { scope },
-                })
+                Node::new(
+                    Tree::Scope {
+                        nodes: if scope.is_empty() { vec![node] } else { scope },
+                    },
+                    expr.1,
+                )
             }
-            Expr::Location { name, .. } => Node::new(Tree::Constant {
-                value: Value::LValue(builder.resolve_symbol(name.0)),
-            }),
-            Expr::Constant(value) => Node::new(Tree::Constant {
-                value: match value {
-                    crate::value::Value::Number(x) => Value::RValue(RValue::Number(*x)),
-                    _ => todo!(),
+            Expr::Location { name, .. } => Node::new(
+                Tree::Constant {
+                    value: Value::LValue(builder.resolve_symbol(*name)),
                 },
-            }),
+                expr.1,
+            ),
+            Expr::Constant(value) => Node::new(
+                Tree::Constant {
+                    value: match value {
+                        crate::value::Value::Number(x) => Value::RValue(RValue::Number(*x)),
+                        _ => todo!(),
+                    },
+                },
+                expr.1,
+            ),
             Expr::Unary(_op, _arg) => todo!(),
             Expr::Binary(op, left, right) => {
-                let func_ref = builder.resolve_symbol(op.get_builtin_name());
-                Node::new(Tree::Call {
-                    callee: Box::new(Node::new(Tree::Constant {
-                        value: Value::LValue(func_ref),
-                    })),
-                    args: [left, right]
-                        .iter()
-                        .map(|arg| Self::from_ast_impl(arg, builder))
-                        .collect(),
-                })
+                let func_ref = builder.resolve_symbol(op.map(|op| op.get_builtin_name()));
+                Node::new(
+                    Tree::Call {
+                        callee: Box::new(Node::new(
+                            Tree::Constant {
+                                value: Value::LValue(func_ref),
+                            },
+                            op.1,
+                        )),
+                        args: [left, right]
+                            .iter()
+                            .map(|arg| Self::from_ast_impl(arg, builder))
+                            .collect(),
+                    },
+                    expr.1,
+                )
             }
-            Expr::Assign(lhs, rhs) => Node::new(Tree::Assign {
-                assignee: Box::new(Self::from_ast_impl(lhs.as_ref(), builder)),
-                value: Box::new(Self::from_ast_impl(rhs.as_ref(), builder)),
-            }),
+            Expr::Assign(lhs, rhs) => Node::new(
+                Tree::Assign {
+                    assignee: Box::new(Self::from_ast_impl(lhs.as_ref(), builder)),
+                    value: Box::new(Self::from_ast_impl(rhs.as_ref(), builder)),
+                },
+                expr.1,
+            ),
             Expr::Seq(first, second) => {
                 let first_node = Self::from_ast_impl(first.as_ref(), builder);
                 builder.push_node(first_node);
@@ -277,7 +300,7 @@ impl<'src> IR<'src> {
                         builder.push_node(second_node);
                     }
                 }
-                Node::default()
+                Node::empty(expr.1)
             }
             Expr::Let {
                 var,
@@ -285,26 +308,28 @@ impl<'src> IR<'src> {
                 val,
             } => {
                 let value_node = Self::from_ast_impl(val.as_ref(), builder);
-                builder.push_node(Node::new(Tree::Let {
-                    variable: var.name.0,
-                    value: Box::new(value_node),
-                }));
-                builder.push_symbol(var.name.0, IRSymbol::Variable);
-                Node::default()
+                builder.push_symbol(var.name, IRSymbol::Variable);
+                Node::new(
+                    Tree::Let {
+                        variable: var.name.0,
+                        value: Box::new(value_node),
+                    },
+                    expr.1,
+                )
             }
             Expr::Function { name, func, .. } => {
-                let args: Vec<_> = func.args.iter().map(|a| a.0).collect();
                 let func_symbol = IRSymbol::Function {
                     index: builder.func_table.len(),
                     info: FuncInfo {
-                        name: name.0,
-                        args: args.clone(),
+                        name: *name,
+                        args: func.args.clone(),
+                        _span: func.decl_span,
                         global: builder.scope_stack.len() <= 1,
                         body: FuncBody::Unknown,
                     },
                 };
-                builder.push_symbol(name.0, func_symbol);
-                builder.push_frame(args);
+                builder.push_symbol(*name, func_symbol);
+                builder.push_frame(func.args.clone());
 
                 let body_node = Self::from_ast_impl(&func.body, builder);
 
@@ -315,41 +340,53 @@ impl<'src> IR<'src> {
                 } else {
                     unreachable!()
                 }
-                builder.push_symbol(name.0, func_symbol);
+                builder.push_symbol(*name, func_symbol);
 
                 builder.func_table.push(None);
-                Node::default()
+                Node::empty(expr.1)
             }
             Expr::If {
                 cond,
                 if_true,
                 if_false,
-            } => Node::new(Tree::If {
-                condition: Box::new(Self::from_ast_impl(cond.as_ref(), builder)),
-                if_then: Box::new(Self::from_ast_impl(if_true.as_ref(), builder)),
-                if_else: Box::new(
-                    if_false
-                        .as_ref()
-                        .map(|if_false| Self::from_ast_impl(if_false.as_ref(), builder))
-                        .unwrap_or_default(),
-                ),
-            }),
-            Expr::Return(expr) => Node::new(Tree::Return {
-                value: Box::new(Self::from_ast_impl(expr.as_ref(), builder)),
-            }),
-            Expr::While { cond, body } => Node::new(Tree::While {
-                condition: Box::new(Self::from_ast_impl(cond.as_ref(), builder)),
-                body: Box::new(Self::from_ast_impl(body.as_ref(), builder)),
-            }),
-            Expr::Call(callee, args) => Node::new(Tree::Call {
-                callee: Box::new(Self::from_ast_impl(callee.as_ref(), builder)),
-                args: args
-                    .iter()
-                    .map(|arg| Self::from_ast_impl(arg, builder))
-                    .collect(),
-            }),
-            Expr::Break => Node::new(Tree::Break),
-            Expr::Continue => Node::new(Tree::Continue),
+            } => Node::new(
+                Tree::If {
+                    condition: Box::new(Self::from_ast_impl(cond.as_ref(), builder)),
+                    if_then: Box::new(Self::from_ast_impl(if_true.as_ref(), builder)),
+                    if_else: Box::new(
+                        if_false
+                            .as_ref()
+                            .map(|if_false| Self::from_ast_impl(if_false.as_ref(), builder))
+                            .unwrap_or_else(|| Node::empty(expr.1)),
+                    ),
+                },
+                expr.1,
+            ),
+            Expr::Return(expr) => Node::new(
+                Tree::Return {
+                    value: Box::new(Self::from_ast_impl(expr.as_ref(), builder)),
+                },
+                expr.1,
+            ),
+            Expr::While { cond, body } => Node::new(
+                Tree::While {
+                    condition: Box::new(Self::from_ast_impl(cond.as_ref(), builder)),
+                    body: Box::new(Self::from_ast_impl(body.as_ref(), builder)),
+                },
+                expr.1,
+            ),
+            Expr::Call(callee, args) => Node::new(
+                Tree::Call {
+                    callee: Box::new(Self::from_ast_impl(callee.as_ref(), builder)),
+                    args: args
+                        .iter()
+                        .map(|arg| Self::from_ast_impl(arg, builder))
+                        .collect(),
+                },
+                expr.1,
+            ),
+            Expr::Break => Node::new(Tree::Break, expr.1),
+            Expr::Continue => Node::new(Tree::Continue, expr.1),
             _ => todo!(),
         }
     }
@@ -361,7 +398,7 @@ impl<'src> IR<'src> {
     ) {
         self.func_table
             .iter_mut()
-            .find(|info| info.name == name.as_ref() && info.global)
+            .find(|info| info.name.0 == name.as_ref() && info.global)
             .unwrap_or_else(|| panic!("attempt to redefine undefined function {}", name.as_ref()))
             .body = FuncBody::Builtin(Box::new(builtin));
     }
@@ -369,21 +406,27 @@ impl<'src> IR<'src> {
 
 #[derive(Debug, PartialEq)]
 pub struct Node<'src> {
-    // span: SimpleSpan,
+    span: SimpleSpan,
     tree: Tree<'src>,
 }
 
-impl<'src> Default for Node<'src> {
-    fn default() -> Self {
+impl<'src> Node<'src> {
+    fn new(tree: Tree<'src>, span: SimpleSpan) -> Self {
+        Self { span, tree }
+    }
+
+    fn empty(span: SimpleSpan) -> Self {
         Self {
+            span: span.to_end(),
             tree: Tree::Scope { nodes: Vec::new() },
         }
     }
-}
 
-impl<'src> Node<'src> {
-    fn new(tree: Tree<'src>) -> Self {
-        Self { tree }
+    fn is_empty(&self) -> bool {
+        match &self.tree {
+            Tree::Scope { nodes } => nodes.is_empty(),
+            _ => false,
+        }
     }
 }
 
@@ -548,7 +591,7 @@ impl<'src> InterpretEnv<'src> {
                             .args
                             .iter()
                             .zip(arg_vals.into_iter())
-                            .for_each(|(name, value)| self.var_stack.push((*name, value)));
+                            .for_each(|(name, value)| self.var_stack.push((name.0, value)));
                         let result = self.interpret_node(node, ir);
                         let result_value = match result {
                             Ok(value) => value.to_rvalue(self)?,
@@ -571,7 +614,7 @@ impl<'src> InterpretEnv<'src> {
                         Reference::Function(index) => {
                             return Err(UnwindReason::Panic(format!(
                                 "attempt to assign to a function {}",
-                                ir.func_table.get(index).unwrap().name
+                                ir.func_table.get(index).unwrap().name.0
                             )))
                         }
                     },

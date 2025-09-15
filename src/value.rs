@@ -1,8 +1,7 @@
-use core::
-    ops::{Range, RangeInclusive}
-;
+use core::ops::{Range, RangeInclusive};
 
 use alloc::{boxed::Box, rc::Rc, string::String, vec::Vec};
+use chumsky::span::SimpleSpan;
 use hashbrown::HashMap;
 
 use crate::{
@@ -205,6 +204,7 @@ impl<'src> Pointer<'src> {
 pub struct Function<'src> {
     pub params: Vec<Identifier<'src>>,
     pub args: Vec<Identifier<'src>>,
+    pub decl_span: SimpleSpan,
     pub body: Box<Spanned<Expr<'src>>>,
     pub ty: Polytype<'src>,
 }
@@ -214,6 +214,7 @@ impl<'src> Function<'src> {
         type_params: Vec<Identifier<'src>>,
         vars: Vec<Variable<'src>>,
         ret_type: Type<'src>,
+        decl_span: SimpleSpan,
         body: Spanned<Expr<'src>>,
     ) -> Self {
         let (var_names, var_types) = vars
@@ -229,6 +230,7 @@ impl<'src> Function<'src> {
             params: type_params.clone(),
             args: var_names,
             body: Box::new(body),
+            decl_span: decl_span,
             ty: Polytype::from(type_params, func_ty),
         }
     }
@@ -236,6 +238,7 @@ impl<'src> Function<'src> {
     pub fn new_closure(
         vars: Vec<Variable<'src>>,
         ret_type: Type<'src>,
+        decl_span: SimpleSpan,
         body: Spanned<Expr<'src>>,
     ) -> Self {
         let (var_names, var_types) = vars
@@ -246,6 +249,7 @@ impl<'src> Function<'src> {
             params: Vec::new(),
             args: var_names,
             body: Box::new(body),
+            decl_span: decl_span,
             ty: Polytype::from_unknown(Type::Function(var_types, Box::new(ret_type))),
         }
     }

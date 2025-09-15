@@ -240,13 +240,7 @@ fn interpret_string<'a, 'src>(source: &'src str, name: &'a str) -> Result<Interp
     ir.register_builtin("__or", op_logic(|a, b| a || b));
 
     ir.register_builtin("println", |args| {
-        println!(
-            "{}",
-            args.iter()
-                .map(RValue::to_string)
-                .collect::<Vec<_>>()
-                .join(" ")
-        );
+        println!("{}", args[0].to_string());
         Ok(RValue::default())
     });
 

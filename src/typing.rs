@@ -1004,7 +1004,7 @@ impl<'src> TypeEnv<'src> {
                 .return_last(),
             Expr::Unary(op, arg) => self
                 .monad(gen)
-                .push_polytype(op.get_type())
+                .push_polytype(op.0.get_type())
                 .instantiated()
                 .infer_type(arg)
                 .gen_fresh_type()
@@ -1014,7 +1014,7 @@ impl<'src> TypeEnv<'src> {
                 .return_last(),
             Expr::Binary(op, left, right) => self
                 .monad(gen)
-                .push_polytype(op.get_type())
+                .push_polytype(op.0.get_type())
                 .instantiated()
                 .infer_type(left)
                 .infer_type(right)

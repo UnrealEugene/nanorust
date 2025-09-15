@@ -29,8 +29,8 @@ pub enum Expr<'src> {
         is_mut: bool,
         expr: Box<Spanned<Self>>,
     }, // Value
-    Unary(UnaryOp, Box<Spanned<Self>>), // Value
-    Binary(BinaryOp, Box<Spanned<Self>>, Box<Spanned<Self>>), // Value
+    Unary(Spanned<UnaryOp>, Box<Spanned<Self>>), // Value
+    Binary(Spanned<BinaryOp>, Box<Spanned<Self>>, Box<Spanned<Self>>), // Value
     Assign(Box<Spanned<Self>>, Box<Spanned<Self>>), // Void
     Seq(Box<Spanned<Self>>, Box<Spanned<Self>>), // any
     Let {
