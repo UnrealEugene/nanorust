@@ -1,3 +1,5 @@
+use core::{iter::Rev, slice::Iter};
+
 use alloc::{
     boxed::Box,
     string::{String, ToString},
@@ -7,7 +9,7 @@ use alloc::{
 use chumsky::span::{SimpleSpan, Span};
 
 use crate::{
-    error::{BreakOutsideOfLoopError, SemanticError, UndefinedSymbolError},
+    error::{BreakOutsideOfLoopError, FunctionCaptureError, SemanticError, UndefinedSymbolError},
     expr::Expr,
     parser::Identifier,
     span::Spanned,
@@ -95,13 +97,137 @@ pub struct IR<'src> {
 }
 
 enum IRSymbol<'src> {
+    InaccesibleVariable,
     Variable,
     Function { index: usize, info: FuncInfo<'src> },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SymbolScopeType {
+    Block,
+    Frame,
+}
+
+struct SymbolScope<'src> {
+    scope_type: SymbolScopeType,
+    scope: Vec<(Identifier<'src>, IRSymbol<'src>)>,
+}
+
+impl<'src> SymbolScope<'src> {
+    fn new(scope_type: SymbolScopeType) -> Self {
+        Self {
+            scope_type,
+            scope: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, name: Identifier<'src>, symbol: IRSymbol<'src>) {
+        self.scope.push((name, symbol));
+    }
+
+    fn pop(&mut self) -> Option<(Identifier<'src>, IRSymbol<'src>)> {
+        self.scope.pop()
+    }
+}
+
+struct SymbolStackIter<'a, 'src> {
+    iter: Rev<Iter<'a, SymbolScope<'src>>>,
+    inner_iter: Rev<Iter<'a, (Identifier<'src>, IRSymbol<'src>)>>,
+    scope_type: SymbolScopeType,
+    escaped_frame: bool,
+}
+
+impl<'a, 'src> Iterator for SymbolStackIter<'a, 'src> {
+    type Item = (&'a Identifier<'src>, &'a IRSymbol<'src>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some((name, symbol)) = self.inner_iter.next() {
+                return Some((
+                    name,
+                    match symbol {
+                        IRSymbol::Variable if self.escaped_frame => &IRSymbol::InaccesibleVariable,
+                        _ => symbol,
+                    },
+                ));
+            }
+            if self.scope_type == SymbolScopeType::Frame {
+                self.escaped_frame = true;
+            }
+            let Some(symbol_scope) = self.iter.next() else {
+                return None;
+            };
+            self.inner_iter = symbol_scope.scope.iter().rev();
+            self.scope_type = symbol_scope.scope_type;
+        }
+    }
+}
+
+struct SymbolStack<'src> {
+    stack: Vec<SymbolScope<'src>>,
+}
+
+impl<'src> SymbolStack<'src> {
+    fn new() -> Self {
+        Self { stack: Vec::new() }
+    }
+
+    fn iter<'a>(&'a self) -> impl Iterator<Item = (&'a Identifier<'src>, &'a IRSymbol<'src>)> {
+        let mut iter = self.stack.iter().rev();
+        let symbol_scope = iter.next().unwrap();
+        SymbolStackIter {
+            iter: iter,
+            inner_iter: symbol_scope.scope.iter().rev(),
+            scope_type: symbol_scope.scope_type,
+            escaped_frame: false,
+        }
+    }
+
+    fn last_scope_type(&self) -> Option<SymbolScopeType> {
+        self.stack.last().map(|s| s.scope_type)
+    }
+
+    fn pop_scope(
+        &mut self,
+        expected_scope_type: SymbolScopeType,
+    ) -> Option<Box<[(Identifier<'src>, IRSymbol<'src>)]>> {
+        self.last_scope_type()
+            .filter(|scope_type| *scope_type == expected_scope_type)
+            .and_then(|_| self.stack.pop().map(|s| s.scope.into_boxed_slice()))
+    }
+
+    fn push_block(&mut self) {
+        self.stack.push(SymbolScope::new(SymbolScopeType::Block));
+    }
+
+    fn pop_block(&mut self) -> Option<Box<[(Identifier<'src>, IRSymbol<'src>)]>> {
+        self.pop_scope(SymbolScopeType::Block)
+    }
+
+    fn push_fn_frame(&mut self, args: impl Into<Box<[Identifier<'src>]>>) {
+        let mut scope = SymbolScope::new(SymbolScopeType::Frame);
+        args.into()
+            .into_iter()
+            .for_each(|name| scope.push(name, IRSymbol::Variable));
+        self.stack.push(scope);
+    }
+
+    fn pop_fn_frame(&mut self) -> Option<Box<[(Identifier<'src>, IRSymbol<'src>)]>> {
+        self.pop_scope(SymbolScopeType::Frame)
+    }
+
+    fn push(&mut self, name: Identifier<'src>, symbol: IRSymbol<'src>) {
+        self.stack.last_mut().unwrap().push(name, symbol);
+    }
+
+    fn pop(&mut self) -> Option<(Identifier<'src>, IRSymbol<'src>)> {
+        self.stack.last_mut().and_then(|v| v.pop())
+    }
+}
+
 struct IRBuilder<'src> {
     func_table: Vec<Option<FuncInfo<'src>>>,
-    symbol_stack: Vec<Vec<(Identifier<'src>, IRSymbol<'src>)>>,
+    symbol_stack: SymbolStack<'src>,
     scope_stack: Vec<Vec<Node<'src>>>,
     inside_loop: bool,
 }
@@ -110,50 +236,30 @@ impl<'src> IRBuilder<'src> {
     fn new() -> Self {
         IRBuilder {
             func_table: Vec::new(),
-            symbol_stack: Vec::new(),
+            symbol_stack: SymbolStack::new(),
             scope_stack: Vec::new(),
             inside_loop: false,
         }
     }
 
-    fn push_scope(&mut self) {
-        self.symbol_stack.push(Vec::new());
+    fn push_block(&mut self) {
+        self.symbol_stack.push_block();
         self.scope_stack.push(Vec::new());
     }
 
-    fn pop_scope(&mut self) -> Vec<Node<'src>> {
+    fn pop_block(&mut self) -> Vec<Node<'src>> {
         self.symbol_stack
-            .pop()
+            .pop_block()
             .unwrap()
             .into_iter()
             .for_each(|(_, symbol)| match symbol {
-                IRSymbol::Variable => {}
                 IRSymbol::Function { index, info } => {
                     self.func_table.get_mut(index).unwrap().replace(info);
                 }
+                _ => {}
             });
 
         self.scope_stack.pop().unwrap()
-    }
-
-    fn push_frame(&mut self, args: Vec<Identifier<'src>>) {
-        self.symbol_stack.push(
-            args.into_iter()
-                .map(|name| (name, IRSymbol::Variable))
-                .collect(),
-        );
-    }
-
-    fn pop_frame(&mut self) {
-        self.symbol_stack.pop();
-    }
-
-    fn push_symbol(&mut self, name: Identifier<'src>, symbol: IRSymbol<'src>) {
-        self.symbol_stack.last_mut().unwrap().push((name, symbol));
-    }
-
-    fn pop_symbol(&mut self) -> IRSymbol<'src> {
-        self.symbol_stack.last_mut().unwrap().pop().unwrap().1
     }
 
     fn push_node(&mut self, node: Node<'src>) {
@@ -164,11 +270,17 @@ impl<'src> IRBuilder<'src> {
 
     fn resolve_symbol(&self, name: Identifier<'src>) -> Result<'src, Reference> {
         let mut var_index = 0usize;
-        for (symbol_name, symbol) in self.symbol_stack.iter().flatten().rev() {
+        for (symbol_name, symbol) in self.symbol_stack.iter() {
             if *symbol_name == name {
                 return Ok(match symbol {
                     IRSymbol::Variable => Reference::Variable(var_index),
                     IRSymbol::Function { index, .. } => Reference::Function(*index),
+                    IRSymbol::InaccesibleVariable => {
+                        return Err(Box::new(FunctionCaptureError {
+                            ident: name,
+                            other_ident: *symbol_name,
+                        }));
+                    }
                 });
             }
             if let IRSymbol::Variable = symbol {
@@ -190,9 +302,9 @@ impl<'src> IR<'src> {
 
     pub fn from_ast(ast: &Spanned<Expr<'src>>) -> Result<'src, IR<'src>> {
         let mut builder = IRBuilder::new();
-        builder.push_scope();
+        builder.push_block();
         let node = Self::from_ast_impl(ast, &mut builder)?;
-        let scope = builder.pop_scope();
+        let scope = builder.pop_block();
         Ok(IR {
             func_table: builder.func_table.into_iter().map(Option::unwrap).collect(),
             root: Node::new(
@@ -211,9 +323,9 @@ impl<'src> IR<'src> {
         Ok(match &expr.0 {
             Expr::Skip => Node::empty(expr.1),
             Expr::Block(expr) => {
-                builder.push_scope();
+                builder.push_block();
                 let node = Self::from_ast_impl(expr.as_ref(), builder)?;
-                let scope = builder.pop_scope();
+                let scope = builder.pop_block();
                 Node::new(
                     Tree::Scope {
                         nodes: if scope.is_empty() { vec![node] } else { scope },
@@ -280,7 +392,7 @@ impl<'src> IR<'src> {
                 val,
             } => {
                 let value_node = Self::from_ast_impl(val.as_ref(), builder)?;
-                builder.push_symbol(var.name, IRSymbol::Variable);
+                builder.symbol_stack.push(var.name, IRSymbol::Variable);
                 Node::new(
                     Tree::Let {
                         variable: var.name.0,
@@ -300,21 +412,21 @@ impl<'src> IR<'src> {
                         body: None,
                     },
                 };
-                builder.push_symbol(*name, func_symbol);
-                builder.push_frame(func.args.clone());
+                builder.func_table.push(None);
+                builder.symbol_stack.push(*name, func_symbol);
+                builder.symbol_stack.push_fn_frame(func.args.clone());
 
                 let body_node = Self::from_ast_impl(&func.body, builder)?;
 
-                builder.pop_frame();
-                let mut func_symbol = builder.pop_symbol();
+                builder.symbol_stack.pop_fn_frame();
+                let mut func_symbol = builder.symbol_stack.pop().unwrap().1;
                 if let IRSymbol::Function { ref mut info, .. } = func_symbol {
                     info.body = Some(body_node);
                 } else {
                     unreachable!()
                 }
-                builder.push_symbol(*name, func_symbol);
+                builder.symbol_stack.push(*name, func_symbol);
 
-                builder.func_table.push(None);
                 Node::empty(expr.1)
             }
             Expr::If {
