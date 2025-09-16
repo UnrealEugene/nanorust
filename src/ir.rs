@@ -1,6 +1,5 @@
 use alloc::{
     boxed::Box,
-    format,
     string::{String, ToString},
     vec,
     vec::Vec,
@@ -30,14 +29,6 @@ impl Into<Value> for RValue {
     }
 }
 
-fn ordinal(n: usize) -> String {
-    match n {
-        1 => "1st".into(),
-        2 => "2nd".into(),
-        _ => format!("{}th", n),
-    }
-}
-
 impl ToString for RValue {
     fn to_string(&self) -> String {
         match self {
@@ -50,23 +41,17 @@ impl ToString for RValue {
 }
 
 impl RValue {
-    pub fn unwrap_number(self, pos: usize) -> Result<i32, InterpretError> {
+    pub fn number(self) -> Option<i32> {
         match self {
-            RValue::Number(x) => Ok(x),
-            _ => Err(InterpretError::new(format!(
-                "{} argument is not a number",
-                ordinal(pos)
-            ))),
+            RValue::Number(x) => Some(x),
+            _ => None,
         }
     }
 
-    pub fn unwrap_boolean(self, pos: usize) -> Result<bool, InterpretError> {
+    pub fn boolean(self) -> Option<bool> {
         match self {
-            RValue::Boolean(x) => Ok(x),
-            _ => Err(InterpretError::new(format!(
-                "{} argument is not a boolean",
-                ordinal(pos)
-            ))),
+            RValue::Boolean(x) => Some(x),
+            _ => None,
         }
     }
 }
@@ -84,46 +69,17 @@ impl Default for Value {
 }
 
 impl Value {
-    fn unit() -> Self {
+    pub fn unit() -> Self {
         Self::default()
     }
-
-    fn to_rvalue<'src>(self, env: &InterpretEnv<'src>) -> ControlFlow<RValue> {
-        match self {
-            Value::RValue(rvalue) => Ok(rvalue),
-            Value::LValue(reference) => match &reference {
-                Reference::Function(_) => Ok(RValue::Reference(reference)),
-                Reference::Variable(index) => env
-                    .var_stack
-                    .get(env.var_stack.len() - *index - 1)
-                    .ok_or_else(|| {
-                        UnwindReason::Panic(format!(
-                            "illegal variable reference {:?}, stack length is {}",
-                            &reference,
-                            env.var_stack.len()
-                        ))
-                    })
-                    .map(|(_, val)| val)
-                    .cloned(),
-            },
-        }
-    }
-}
-
-pub type Builtin = Box<dyn Fn(&[RValue]) -> InterpretResult + 'static>;
-
-pub enum FuncBody<'src> {
-    Builtin(Builtin),
-    Node(Node<'src>),
-    Unknown,
 }
 
 pub struct FuncInfo<'src> {
-    name: Identifier<'src>,
-    args: Vec<Identifier<'src>>,
-    _span: SimpleSpan,
-    global: bool,
-    body: FuncBody<'src>,
+    pub name: Identifier<'src>,
+    pub args: Vec<Identifier<'src>>,
+    pub span: SimpleSpan,
+    pub global: bool,
+    pub body: Option<Node<'src>>,
 }
 
 pub struct IR<'src> {
@@ -215,6 +171,10 @@ impl<'src> IRBuilder<'src> {
 }
 
 impl<'src> IR<'src> {
+    pub fn function_table(&self) -> &Vec<FuncInfo<'src>> {
+        &self.func_table
+    }
+
     pub fn root(&self) -> &Node<'src> {
         &self.root
     }
@@ -323,9 +283,9 @@ impl<'src> IR<'src> {
                     info: FuncInfo {
                         name: *name,
                         args: func.args.clone(),
-                        _span: func.decl_span,
+                        span: func.decl_span,
                         global: builder.scope_stack.len() <= 1,
-                        body: FuncBody::Unknown,
+                        body: None,
                     },
                 };
                 builder.push_symbol(*name, func_symbol);
@@ -336,7 +296,7 @@ impl<'src> IR<'src> {
                 builder.pop_frame();
                 let mut func_symbol = builder.pop_symbol();
                 if let IRSymbol::Function { ref mut info, .. } = func_symbol {
-                    info.body = FuncBody::Node(body_node);
+                    info.body = Some(body_node);
                 } else {
                     unreachable!()
                 }
@@ -390,18 +350,6 @@ impl<'src> IR<'src> {
             _ => todo!(),
         }
     }
-
-    pub fn register_builtin(
-        &mut self,
-        name: impl AsRef<str>,
-        builtin: impl Fn(&[RValue]) -> InterpretResult + 'static,
-    ) {
-        self.func_table
-            .iter_mut()
-            .find(|info| info.name.0 == name.as_ref() && info.global)
-            .unwrap_or_else(|| panic!("attempt to redefine undefined function {}", name.as_ref()))
-            .body = FuncBody::Builtin(Box::new(builtin));
-    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -422,7 +370,15 @@ impl<'src> Node<'src> {
         }
     }
 
-    fn is_empty(&self) -> bool {
+    pub fn span(&self) -> SimpleSpan {
+        self.span
+    }
+
+    pub fn tree(&self) -> &Tree<'src> {
+        &self.tree
+    }
+
+    pub fn is_empty(&self) -> bool {
         match &self.tree {
             Tree::Scope { nodes } => nodes.is_empty(),
             _ => false,
@@ -473,216 +429,4 @@ pub enum Tree<'src> {
     Break,
 
     Continue,
-}
-
-pub struct InterpretEnv<'src> {
-    var_stack: Vec<(&'src str, RValue)>,
-}
-
-impl<'src> InterpretEnv<'src> {
-    pub fn new() -> Self {
-        Self {
-            var_stack: Vec::new(),
-        }
-    }
-}
-
-pub type InterpretResult = Result<RValue, InterpretError>;
-
-#[derive(Debug, Clone)]
-pub struct InterpretError {
-    message: String,
-}
-
-impl InterpretError {
-    pub fn new(message: impl AsRef<str>) -> Self {
-        Self {
-            message: message.as_ref().to_string(),
-        }
-    }
-
-    pub fn message(&self) -> &str {
-        self.message.as_str()
-    }
-}
-
-type ControlFlow<T> = Result<T, UnwindReason>;
-
-enum UnwindReason {
-    Panic(String),
-    Return(RValue),
-    Break,
-    Continue,
-}
-
-impl<'src> InterpretEnv<'src> {
-    pub fn interpret(&mut self, ir: &IR<'src>) -> InterpretResult {
-        let result = self
-            .interpret_node(&ir.root, ir)
-            .and_then(|val| val.to_rvalue(self));
-        Ok(match result {
-            Ok(value) => value,
-            Err(UnwindReason::Return(value)) => value,
-            Err(UnwindReason::Panic(message)) => return Err(InterpretError::new(message)),
-            _ => unreachable!(),
-        })
-    }
-
-    fn interpret_node(&mut self, node: &Node<'src>, ir: &IR<'src>) -> ControlFlow<Value> {
-        Ok(match &node.tree {
-            Tree::Constant { value } => value.clone(),
-            Tree::Scope { nodes } => {
-                let stack_len = self.var_stack.len();
-                let x = nodes
-                    .iter()
-                    .map(|node| self.interpret_node(node, ir))
-                    .collect::<ControlFlow<Vec<_>>>()?;
-                self.var_stack.shrink_to(stack_len);
-                x.last()
-                    .cloned()
-                    .unwrap_or_default()
-                    .to_rvalue(&self)?
-                    .into()
-            }
-            Tree::Call { callee, args } => {
-                let value = self.interpret_node(callee, ir)?.to_rvalue(self)?;
-                let func_index = match value {
-                    RValue::Reference(reference) => match reference {
-                        Reference::Function(index) => index,
-                        Reference::Variable(index) => {
-                            return Err(UnwindReason::Panic(format!(
-                                "attempt to call a non-callable variable {}",
-                                self.var_stack
-                                    .get(self.var_stack.len() - index - 1)
-                                    .unwrap()
-                                    .0
-                            )))
-                        }
-                    },
-                    _ => {
-                        return Err(UnwindReason::Panic(format!(
-                            "attempt to call a non-callable value {:?}",
-                            value
-                        )))
-                    }
-                };
-                let func_info = ir.func_table.get(func_index).unwrap();
-                if args.len() != func_info.args.len() {
-                    return Err(UnwindReason::Panic(format!(
-                        "expected {} arguments when calling a function, actual {}",
-                        func_info.args.len(),
-                        args.len()
-                    )));
-                }
-                let arg_vals = args
-                    .iter()
-                    .map(|node| {
-                        self.interpret_node(node, ir)
-                            .and_then(|v| v.to_rvalue(self))
-                    })
-                    .collect::<ControlFlow<Vec<_>>>()?;
-                match &func_info.body {
-                    FuncBody::Builtin(f) => f(&arg_vals)
-                        .map_err(|error| UnwindReason::Panic(error.message))?
-                        .into(),
-                    FuncBody::Node(node) => {
-                        let stack_len = self.var_stack.len();
-                        func_info
-                            .args
-                            .iter()
-                            .zip(arg_vals.into_iter())
-                            .for_each(|(name, value)| self.var_stack.push((name.0, value)));
-                        let result = self.interpret_node(node, ir);
-                        let result_value = match result {
-                            Ok(value) => value.to_rvalue(self)?,
-                            Err(UnwindReason::Return(value)) => value,
-                            Err(UnwindReason::Panic(_)) => return result,
-                            _ => unreachable!(),
-                        };
-                        self.var_stack.truncate(stack_len);
-                        Value::RValue(result_value)
-                    }
-                    FuncBody::Unknown => unreachable!(),
-                }
-            }
-            Tree::Assign { assignee, value } => {
-                let assignee_value = self.interpret_node(assignee, ir)?;
-                let value = self.interpret_node(value, ir)?.to_rvalue(self)?;
-                let index = match assignee_value {
-                    Value::LValue(reference) => match reference {
-                        Reference::Variable(index) => index,
-                        Reference::Function(index) => {
-                            return Err(UnwindReason::Panic(format!(
-                                "attempt to assign to a function {}",
-                                ir.func_table.get(index).unwrap().name.0
-                            )))
-                        }
-                    },
-                    Value::RValue(val) => {
-                        return Err(UnwindReason::Panic(format!(
-                            "attempt to assign to a rvalue {:?}",
-                            val
-                        )))
-                    }
-                };
-                let index = self.var_stack.len() - index - 1;
-                self.var_stack.get_mut(index).unwrap().1 = value;
-                Value::unit()
-            }
-            Tree::Let { variable, value } => {
-                let value = self.interpret_node(value, ir)?.to_rvalue(self)?;
-                self.var_stack.push((*variable, value));
-                Value::unit()
-            }
-            Tree::If {
-                condition,
-                if_then,
-                if_else,
-            } => {
-                let cond_value = match self.interpret_node(condition, ir)?.to_rvalue(self)? {
-                    RValue::Boolean(val) => val,
-                    val => {
-                        return Err(UnwindReason::Panic(format!(
-                            "exepcted boolean value as if expression condition, actual {:?}",
-                            val
-                        )))
-                    }
-                };
-
-                self.interpret_node(if cond_value { if_then } else { if_else }, ir)?
-                    .to_rvalue(self)?
-                    .into()
-            }
-            Tree::While { condition, body } => loop {
-                let cond_value = match self.interpret_node(condition, ir)?.to_rvalue(self)? {
-                    RValue::Boolean(val) => val,
-                    val => {
-                        return Err(UnwindReason::Panic(format!(
-                            "exepcted boolean value as while statement condition, actual {:?}",
-                            val
-                        )))
-                    }
-                };
-                if !cond_value {
-                    break Value::unit();
-                }
-                let body_result = self.interpret_node(body, ir);
-                match body_result {
-                    Ok(_) => {}
-                    Err(UnwindReason::Panic(_)) | Err(UnwindReason::Return(_)) => {
-                        return body_result
-                    }
-                    Err(UnwindReason::Break) => break Value::unit(),
-                    Err(UnwindReason::Continue) => continue,
-                };
-            },
-            Tree::Return { value } => {
-                return Err(UnwindReason::Return(
-                    self.interpret_node(value, ir)?.to_rvalue(self)?,
-                ))
-            }
-            Tree::Break => return Err(UnwindReason::Break),
-            Tree::Continue => return Err(UnwindReason::Continue),
-        })
-    }
 }

@@ -11,7 +11,8 @@ use ariadne::{Color, FnCache, Label, Report, ReportKind, Source};
 use chumsky::{error::Rich, input::Input};
 use clap::{Args, Parser, Subcommand};
 use nanorust::{
-    ir::{Builtin, InterpretEnv, RValue, IR},
+    interpret::{FuncOverride, InterpretEnv},
+    ir::{RValue, IR},
     lexer::Token,
     span::Spanned,
 };
@@ -159,26 +160,44 @@ fn parse_into_tokens<'a, 'src>(
     Ok(tokens)
 }
 
-fn op_arith(f: impl Fn(i32, i32) -> i32 + 'static) -> Builtin {
+fn op_arith(f: impl Fn(i32, i32) -> i32 + 'static) -> FuncOverride {
     Box::new(move |args| {
-        let left = args[0].clone().unwrap_number(0)?;
-        let right = args[1].clone().unwrap_number(1)?;
+        let left = args[0]
+            .clone()
+            .number()
+            .ok_or_else(|| "expected a number as a first operand")?;
+        let right = args[1]
+            .clone()
+            .number()
+            .ok_or_else(|| "expected a number as a second operand")?;
         Ok(RValue::Number(f(left, right)))
     })
 }
 
-fn op_cmp(f: impl Fn(&i32, &i32) -> bool + 'static) -> Builtin {
+fn op_cmp(f: impl Fn(&i32, &i32) -> bool + 'static) -> FuncOverride {
     Box::new(move |args| {
-        let left = args[0].clone().unwrap_number(0)?;
-        let right = args[1].clone().unwrap_number(1)?;
+        let left = args[0]
+            .clone()
+            .number()
+            .ok_or_else(|| "expected a number as a first operand")?;
+        let right = args[1]
+            .clone()
+            .number()
+            .ok_or_else(|| "expected a number as a second operand")?;
         Ok(RValue::Boolean(f(&left, &right)))
     })
 }
 
-fn op_logic(f: impl Fn(bool, bool) -> bool + 'static) -> Builtin {
+fn op_logic(f: impl Fn(bool, bool) -> bool + 'static) -> FuncOverride {
     Box::new(move |args| {
-        let left = args[0].clone().unwrap_boolean(0)?;
-        let right = args[1].clone().unwrap_boolean(1)?;
+        let left = args[0]
+            .clone()
+            .boolean()
+            .ok_or_else(|| "expected a boolean as a first operand")?;
+        let right = args[1]
+            .clone()
+            .boolean()
+            .ok_or_else(|| "expected a boolean as a second operand")?;
         Ok(RValue::Boolean(f(left, right)))
     })
 }
@@ -223,29 +242,37 @@ fn interpret_string<'a, 'src>(source: &'src str, name: &'a str) -> Result<Interp
     // let env = Expr::set_up(&ast);
     // let value = ast.0.eval(env);
 
-    let mut ir: IR<'_> = IR::from_ast(&ast);
-
-    ir.register_builtin("__add", op_arith(i32::wrapping_add));
-    ir.register_builtin("__sub", op_arith(i32::wrapping_sub));
-    ir.register_builtin("__mul", op_arith(i32::wrapping_mul));
-    ir.register_builtin("__div", op_arith(i32::wrapping_div));
-    ir.register_builtin("__rem", op_arith(i32::wrapping_rem));
-    ir.register_builtin("__eq", op_cmp(i32::eq));
-    ir.register_builtin("__ne", op_cmp(i32::ne));
-    ir.register_builtin("__le", op_cmp(i32::le));
-    ir.register_builtin("__ge", op_cmp(i32::ge));
-    ir.register_builtin("__lt", op_cmp(i32::lt));
-    ir.register_builtin("__gt", op_cmp(i32::gt));
-    ir.register_builtin("__and", op_logic(|a, b| a && b));
-    ir.register_builtin("__or", op_logic(|a, b| a || b));
-
-    ir.register_builtin("println", |args| {
-        println!("{}", args[0].to_string());
-        Ok(RValue::default())
-    });
-
+    let ir: IR<'_> = IR::from_ast(&ast);
     debug!("IR: {:?}", ir.root());
+
     let mut env = InterpretEnv::new();
+    env.register_builtins(
+        ir.function_table(),
+        [
+            ("__add", op_arith(i32::wrapping_add)),
+            ("__sub", op_arith(i32::wrapping_sub)),
+            ("__mul", op_arith(i32::wrapping_mul)),
+            ("__div", op_arith(i32::wrapping_div)),
+            ("__rem", op_arith(i32::wrapping_rem)),
+            ("__eq", op_cmp(i32::eq)),
+            ("__ne", op_cmp(i32::ne)),
+            ("__le", op_cmp(i32::le)),
+            ("__ge", op_cmp(i32::ge)),
+            ("__lt", op_cmp(i32::lt)),
+            ("__gt", op_cmp(i32::gt)),
+            ("__and", op_logic(|a, b| a && b)),
+            ("__or", op_logic(|a, b| a || b)),
+            (
+                "println",
+                Box::new(|args: &[RValue]| {
+                    println!("{}", args[0].to_string());
+                    Ok(RValue::default())
+                }),
+            ),
+        ]
+        .into(),
+    );
+
     let result = env.interpret(&ir);
 
     Ok(InterpretResult::Value(format!(

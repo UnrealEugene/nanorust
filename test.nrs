@@ -19,4 +19,4 @@ fn pow2_rec(p: i32) -> i32 {
     acc
 }
 
-pow2_rec(6)
+pow2_rec(20)
