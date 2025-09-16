@@ -6,7 +6,14 @@ use alloc::{
 };
 use chumsky::span::{SimpleSpan, Span};
 
-use crate::{expr::Expr, parser::Identifier, span::Spanned};
+use crate::{
+    error::{BreakOutsideOfLoopError, SemanticError, UndefinedSymbolError},
+    expr::Expr,
+    parser::Identifier,
+    span::Spanned,
+};
+
+pub type Result<'src, T> = core::result::Result<T, Box<dyn SemanticError + 'src>>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Reference {
@@ -96,6 +103,7 @@ struct IRBuilder<'src> {
     func_table: Vec<Option<FuncInfo<'src>>>,
     symbol_stack: Vec<Vec<(Identifier<'src>, IRSymbol<'src>)>>,
     scope_stack: Vec<Vec<Node<'src>>>,
+    inside_loop: bool,
 }
 
 impl<'src> IRBuilder<'src> {
@@ -104,6 +112,7 @@ impl<'src> IRBuilder<'src> {
             func_table: Vec::new(),
             symbol_stack: Vec::new(),
             scope_stack: Vec::new(),
+            inside_loop: false,
         }
     }
 
@@ -153,20 +162,20 @@ impl<'src> IRBuilder<'src> {
         }
     }
 
-    fn resolve_symbol(&self, name: Identifier<'src>) -> Reference {
+    fn resolve_symbol(&self, name: Identifier<'src>) -> Result<'src, Reference> {
         let mut var_index = 0usize;
         for (symbol_name, symbol) in self.symbol_stack.iter().flatten().rev() {
             if *symbol_name == name {
-                return match symbol {
+                return Ok(match symbol {
                     IRSymbol::Variable => Reference::Variable(var_index),
                     IRSymbol::Function { index, .. } => Reference::Function(*index),
-                };
+                });
             }
             if let IRSymbol::Variable = symbol {
                 var_index += 1;
             }
         }
-        panic!("undefined identifier {}", name.0)
+        Err(Box::new(UndefinedSymbolError { ident: name }))
     }
 }
 
@@ -179,12 +188,12 @@ impl<'src> IR<'src> {
         &self.root
     }
 
-    pub fn from_ast(ast: &Spanned<Expr<'src>>) -> Self {
+    pub fn from_ast(ast: &Spanned<Expr<'src>>) -> Result<'src, IR<'src>> {
         let mut builder = IRBuilder::new();
         builder.push_scope();
-        let node = Self::from_ast_impl(ast, &mut builder);
+        let node = Self::from_ast_impl(ast, &mut builder)?;
         let scope = builder.pop_scope();
-        IR {
+        Ok(IR {
             func_table: builder.func_table.into_iter().map(Option::unwrap).collect(),
             root: Node::new(
                 Tree::Scope {
@@ -192,15 +201,18 @@ impl<'src> IR<'src> {
                 },
                 ast.1,
             ),
-        }
+        })
     }
 
-    fn from_ast_impl(expr: &Spanned<Expr<'src>>, builder: &mut IRBuilder<'src>) -> Node<'src> {
-        match &expr.0 {
+    fn from_ast_impl(
+        expr: &Spanned<Expr<'src>>,
+        builder: &mut IRBuilder<'src>,
+    ) -> Result<'src, Node<'src>> {
+        Ok(match &expr.0 {
             Expr::Skip => Node::empty(expr.1),
             Expr::Block(expr) => {
                 builder.push_scope();
-                let node = Self::from_ast_impl(expr.as_ref(), builder);
+                let node = Self::from_ast_impl(expr.as_ref(), builder)?;
                 let scope = builder.pop_scope();
                 Node::new(
                     Tree::Scope {
@@ -211,7 +223,7 @@ impl<'src> IR<'src> {
             }
             Expr::Location { name, .. } => Node::new(
                 Tree::Constant {
-                    value: Value::LValue(builder.resolve_symbol(*name)),
+                    value: Value::LValue(builder.resolve_symbol(*name)?),
                 },
                 expr.1,
             ),
@@ -226,7 +238,7 @@ impl<'src> IR<'src> {
             ),
             Expr::Unary(_op, _arg) => todo!(),
             Expr::Binary(op, left, right) => {
-                let func_ref = builder.resolve_symbol(op.map(|op| op.get_builtin_name()));
+                let func_ref = builder.resolve_symbol(op.map(|op| op.get_builtin_name()))?;
                 Node::new(
                     Tree::Call {
                         callee: Box::new(Node::new(
@@ -238,22 +250,22 @@ impl<'src> IR<'src> {
                         args: [left, right]
                             .iter()
                             .map(|arg| Self::from_ast_impl(arg, builder))
-                            .collect(),
+                            .collect::<Result<_>>()?,
                     },
                     expr.1,
                 )
             }
             Expr::Assign(lhs, rhs) => Node::new(
                 Tree::Assign {
-                    assignee: Box::new(Self::from_ast_impl(lhs.as_ref(), builder)),
-                    value: Box::new(Self::from_ast_impl(rhs.as_ref(), builder)),
+                    assignee: Box::new(Self::from_ast_impl(lhs.as_ref(), builder)?),
+                    value: Box::new(Self::from_ast_impl(rhs.as_ref(), builder)?),
                 },
                 expr.1,
             ),
             Expr::Seq(first, second) => {
-                let first_node = Self::from_ast_impl(first.as_ref(), builder);
+                let first_node = Self::from_ast_impl(first.as_ref(), builder)?;
                 builder.push_node(first_node);
-                let second_node = Self::from_ast_impl(second.as_ref(), builder);
+                let second_node = Self::from_ast_impl(second.as_ref(), builder)?;
                 match &second.as_ref().0 {
                     Expr::Seq(..) => {}
                     _ => {
@@ -267,7 +279,7 @@ impl<'src> IR<'src> {
                 is_mut: _,
                 val,
             } => {
-                let value_node = Self::from_ast_impl(val.as_ref(), builder);
+                let value_node = Self::from_ast_impl(val.as_ref(), builder)?;
                 builder.push_symbol(var.name, IRSymbol::Variable);
                 Node::new(
                     Tree::Let {
@@ -291,7 +303,7 @@ impl<'src> IR<'src> {
                 builder.push_symbol(*name, func_symbol);
                 builder.push_frame(func.args.clone());
 
-                let body_node = Self::from_ast_impl(&func.body, builder);
+                let body_node = Self::from_ast_impl(&func.body, builder)?;
 
                 builder.pop_frame();
                 let mut func_symbol = builder.pop_symbol();
@@ -311,44 +323,71 @@ impl<'src> IR<'src> {
                 if_false,
             } => Node::new(
                 Tree::If {
-                    condition: Box::new(Self::from_ast_impl(cond.as_ref(), builder)),
-                    if_then: Box::new(Self::from_ast_impl(if_true.as_ref(), builder)),
+                    condition: Box::new(Self::from_ast_impl(cond.as_ref(), builder)?),
+                    if_then: Box::new(Self::from_ast_impl(if_true.as_ref(), builder)?),
                     if_else: Box::new(
                         if_false
                             .as_ref()
                             .map(|if_false| Self::from_ast_impl(if_false.as_ref(), builder))
-                            .unwrap_or_else(|| Node::empty(expr.1)),
+                            .unwrap_or_else(|| Ok(Node::empty(expr.1)))?,
                     ),
                 },
                 expr.1,
             ),
             Expr::Return(expr) => Node::new(
                 Tree::Return {
-                    value: Box::new(Self::from_ast_impl(expr.as_ref(), builder)),
+                    value: Box::new(Self::from_ast_impl(expr.as_ref(), builder)?),
                 },
                 expr.1,
             ),
-            Expr::While { cond, body } => Node::new(
-                Tree::While {
-                    condition: Box::new(Self::from_ast_impl(cond.as_ref(), builder)),
-                    body: Box::new(Self::from_ast_impl(body.as_ref(), builder)),
-                },
-                expr.1,
-            ),
-            Expr::Call(callee, args) => Node::new(
-                Tree::Call {
-                    callee: Box::new(Self::from_ast_impl(callee.as_ref(), builder)),
-                    args: args
-                        .iter()
-                        .map(|arg| Self::from_ast_impl(arg, builder))
-                        .collect(),
-                },
-                expr.1,
-            ),
-            Expr::Break => Node::new(Tree::Break, expr.1),
-            Expr::Continue => Node::new(Tree::Continue, expr.1),
+            Expr::While { cond, body } => {
+                let cond_node = Self::from_ast_impl(cond.as_ref(), builder)?;
+                let prev_inside_loop = builder.inside_loop;
+                builder.inside_loop = true;
+                let body_node = Self::from_ast_impl(body.as_ref(), builder)?;
+                builder.inside_loop = prev_inside_loop;
+                Node::new(
+                    Tree::While {
+                        condition: Box::new(cond_node),
+                        body: Box::new(body_node),
+                    },
+                    expr.1,
+                )
+            }
+            Expr::Call(callee, args) => {
+                let prev_inside_loop = builder.inside_loop;
+                builder.inside_loop = false;
+                let callee_node = Self::from_ast_impl(callee.as_ref(), builder)?;
+                builder.inside_loop = prev_inside_loop;
+                Node::new(
+                    Tree::Call {
+                        callee: Box::new(callee_node),
+                        args: args
+                            .iter()
+                            .map(|arg| Self::from_ast_impl(arg, builder))
+                            .collect::<Result<_>>()?,
+                    },
+                    expr.1,
+                )
+            }
+            Expr::Break(keyword) => {
+                if !builder.inside_loop {
+                    return Err(Box::new(BreakOutsideOfLoopError {
+                        keyword: keyword.clone(),
+                    }));
+                }
+                Node::new(Tree::Break, expr.1)
+            }
+            Expr::Continue(keyword) => {
+                if !builder.inside_loop {
+                    return Err(Box::new(BreakOutsideOfLoopError {
+                        keyword: keyword.clone(),
+                    }));
+                }
+                Node::new(Tree::Continue, expr.1)
+            }
             _ => todo!(),
-        }
+        })
     }
 }
 

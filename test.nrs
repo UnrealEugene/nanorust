@@ -11,6 +11,7 @@ fn pow2_rec(p: i32) -> i32 {
     if p <= 0 {
         return 1
     }
+    break;
     let acc = pow2_rec(p / 2);
     acc = acc * acc;
     if p % 2 == 1 {

@@ -1189,8 +1189,8 @@ impl<'src> TypeEnv<'src> {
                 })
                 .unified_with(Type::unit())
                 .return_unit(),
-            Expr::Continue => self.monad(gen).return_never(),
-            Expr::Break => self.monad(gen).return_never(),
+            Expr::Continue(_) => self.monad(gen).return_never(),
+            Expr::Break(_) => self.monad(gen).return_never(),
         }
     }
 

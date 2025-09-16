@@ -120,10 +120,12 @@ impl BuiltinType {
             Token::Ident(n) if n == "range" => BuiltinType::Range,
         }
         .map(Type::Builtin)
-    }   
+    }
 }
 
 pub type Identifier<'src> = Spanned<&'src str>;
+
+pub type Keyword<'src> = Spanned<Token<'src>>;
 
 impl<'src> PartialEq for Identifier<'src> {
     fn eq(&self, other: &Self) -> bool {
@@ -447,9 +449,13 @@ where
                     if_expr_cons(expr.clone()),
                     return_expr,
                     just(Token::Continue)
-                        .map(|_| Expr::Continue)
+                        .map_with(span_wrap)
+                        .map(|tok| Expr::Continue(tok))
                         .map_with(span_wrap),
-                    just(Token::Break).map(|_| Expr::Break).map_with(span_wrap),
+                    just(Token::Break)
+                        .map_with(span_wrap)
+                        .map(|tok| Expr::Break(tok))
+                        .map_with(span_wrap),
                     lambda.clone(),
                     block.clone(),
                     range.clone(),
@@ -526,7 +532,9 @@ where
                 .map(
                     |(((((name, params), args), ret_type), decl_span), body)| Expr::Function {
                         name,
-                        func: Rc::new(Function::new_function(params, args, ret_type, decl_span, body)),
+                        func: Rc::new(Function::new_function(
+                            params, args, ret_type, decl_span, body,
+                        )),
                     },
                 )
                 .map_with(span_wrap)

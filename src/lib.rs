@@ -9,7 +9,7 @@ extern crate slog_term;
 
 extern crate self as nanorust;
 
-// pub mod eval;
+pub mod error;
 pub mod expr;
 pub mod interpret;
 pub mod ir;

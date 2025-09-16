@@ -7,7 +7,7 @@ extern crate slog_term;
 
 use std::{error::Error, fmt::Display, io, ops::Range, path::Path, process::ExitCode};
 
-use ariadne::{Color, FnCache, Label, Report, ReportKind, Source};
+use ariadne::{Color, Label, Report, ReportKind, Source};
 use chumsky::{error::Rich, input::Input};
 use clap::{Args, Parser, Subcommand};
 use nanorust::{
@@ -202,7 +202,10 @@ fn op_logic(f: impl Fn(bool, bool) -> bool + 'static) -> FuncOverride {
     })
 }
 
-fn interpret_string<'a, 'src>(source: &'src str, name: &'a str) -> Result<InterpretResult<'a>> {
+fn interpret_string<'src>(
+    source: &'src str,
+    name: &'static str,
+) -> Result<InterpretResult<'static>> {
     let prelude_source = include_str!("../data/prelude.nrs");
     let prelude_tokens = match parse_into_tokens(prelude_source, "prelude.nrs") {
         Ok(tokens) => tokens,
@@ -239,10 +242,15 @@ fn interpret_string<'a, 'src>(source: &'src str, name: &'a str) -> Result<Interp
     info!("sucessfully produced AST for {}", name);
     debug!("AST: {:?}", ast);
 
-    // let env = Expr::set_up(&ast);
-    // let value = ast.0.eval(env);
-
-    let ir: IR<'_> = IR::from_ast(&ast);
+    let ir: IR<'_> = match IR::from_ast(&ast) {
+        Ok(ir) => ir,
+        Err(error) => {
+            return Ok(InterpretResult::Report(vec![error
+                .report(name)
+                .with_code(format!("E{:02}", error.code()))
+                .finish()]))
+        }
+    };
     debug!("IR: {:?}", ir.root());
 
     let mut env = InterpretEnv::new();
@@ -285,9 +293,9 @@ fn interpret_string<'a, 'src>(source: &'src str, name: &'a str) -> Result<Interp
 }
 
 fn interpret(args: InterpretCmd) -> Result<ExitCode> {
-    let file_path = args.path.as_str();
-    info!("reading file {}", &args.path);
-    let source = std::fs::read_to_string(Path::new(&args.path))?;
+    let file_path = args.path.leak();
+    info!("reading file {}", file_path);
+    let source = std::fs::read_to_string(Path::new(file_path))?;
     let res = interpret_string(source.as_str(), file_path)?;
     Ok(match res {
         InterpretResult::Value(value) => {
@@ -297,19 +305,7 @@ fn interpret(args: InterpretCmd) -> Result<ExitCode> {
         InterpretResult::Report(reports) => {
             reports
                 .into_iter()
-                .map(|r| {
-                    r.eprint(
-                        FnCache::new(
-                            (move |id| {
-                                Err(Box::new(format!("failed to fetch source '{}'", id)) as _)
-                            }) as fn(&_) -> _,
-                        )
-                        .with_sources(std::collections::HashMap::from([(
-                            file_path,
-                            Source::from(source.as_str()),
-                        )])),
-                    )
-                })
+                .map(|r| r.eprint((&*file_path, Source::from(source.as_str()))))
                 .collect::<io::Result<()>>()?;
             ExitCode::FAILURE
         }

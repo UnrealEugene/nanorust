@@ -4,7 +4,7 @@ use alloc::{boxed::Box, rc::Rc, string::String, vec::Vec};
 use hashbrown::HashMap;
 
 use crate::{
-    parser::{Identifier, Variable},
+    parser::{Identifier, Keyword, Variable},
     span::Spanned,
     typing::{Polytype, Type},
     value::{BinaryOp, Function, Pointer, UnaryOp, Value},
@@ -60,8 +60,8 @@ pub enum Expr<'src> {
         iter: Box<Spanned<Self>>,
         body: Box<Spanned<Self>>,
     }, // Void
-    Continue,                  // Void
-    Break,                     // Void
+    Continue(Keyword<'src>),   // Void
+    Break(Keyword<'src>),      // Void
 }
 
 impl<'src> Default for Expr<'src> {
