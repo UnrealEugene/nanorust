@@ -128,6 +128,7 @@ fn build_error_reports<'a, 'src, T: Display>(
                         .with_message(format!("while parsing this {}", label))
                         .with_color(Color::Yellow)
                 }))
+                .with_code("E00")
                 .finish()
         })
         .collect()
@@ -273,7 +274,7 @@ fn interpret_string<'src>(
             (
                 "println",
                 Box::new(|args: &[RValue]| {
-                    println!("{}", args[0].to_string());
+                    println!("{:?}", args[0]);
                     Ok(RValue::default())
                 }),
             ),
@@ -286,7 +287,7 @@ fn interpret_string<'src>(
     Ok(InterpretResult::Value(format!(
         "{}",
         match result {
-            Ok(value) => value.to_string(),
+            Ok(value) => format!("{:?}", value),
             Err(error) => error.message().into(),
         }
     )))

@@ -927,7 +927,6 @@ impl<'src> TypeEnv<'src> {
             Expr::Error => unreachable!(),
             Expr::Skip => Ok((Subst::new(), Type::unit())),
             Expr::Block(inner) => self.infer_type_impl(inner, tvg),
-            // Expr::Ignore(inner) => self.monad(tvg).infer_type(inner).return_unit(),
             Expr::Location {
                 name: _name,
                 // ptr_cell,

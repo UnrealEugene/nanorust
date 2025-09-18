@@ -7,12 +7,14 @@ use alloc::{
     vec::Vec,
 };
 use chumsky::span::{SimpleSpan, Span};
+use hashbrown::HashMap;
 
 use crate::{
-    error::{BreakOutsideOfLoopError, FunctionCaptureError, SemanticError, UndefinedSymbolError},
+    error::*,
     expr::Expr,
     parser::Identifier,
     span::Spanned,
+    typing::{Polytype, Type},
 };
 
 pub type Result<'src, T> = core::result::Result<T, Box<dyn SemanticError + 'src>>;
@@ -86,6 +88,7 @@ impl Value {
 pub struct FuncInfo<'src> {
     pub name: Identifier<'src>,
     pub args: Vec<Identifier<'src>>,
+    pub type_: Polytype<'src>,
     pub span: SimpleSpan,
     pub global: bool,
     pub body: Option<Node<'src>>,
@@ -100,6 +103,15 @@ enum IRSymbol<'src> {
     InaccesibleVariable,
     Variable,
     Function { index: usize, info: FuncInfo<'src> },
+}
+
+impl IRSymbol<'_> {
+    fn is_function(&self) -> bool {
+        match self {
+            IRSymbol::Function { .. } => true,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,10 +136,6 @@ impl<'src> SymbolScope<'src> {
     fn push(&mut self, name: Identifier<'src>, symbol: IRSymbol<'src>) {
         self.scope.push((name, symbol));
     }
-
-    fn pop(&mut self) -> Option<(Identifier<'src>, IRSymbol<'src>)> {
-        self.scope.pop()
-    }
 }
 
 struct SymbolStackIter<'a, 'src> {
@@ -135,6 +143,19 @@ struct SymbolStackIter<'a, 'src> {
     inner_iter: Rev<Iter<'a, (Identifier<'src>, IRSymbol<'src>)>>,
     scope_type: SymbolScopeType,
     escaped_frame: bool,
+}
+
+impl<'a, 'src> SymbolStackIter<'a, 'src> {
+    fn new(symbol_stack: &'a SymbolStack<'src>) -> Self {
+        let mut iter = symbol_stack.stack.iter().rev();
+        let symbol_scope = iter.next().unwrap();
+        Self {
+            iter: iter,
+            inner_iter: symbol_scope.scope.iter().rev(),
+            scope_type: symbol_scope.scope_type,
+            escaped_frame: false,
+        }
+    }
 }
 
 impl<'a, 'src> Iterator for SymbolStackIter<'a, 'src> {
@@ -173,14 +194,7 @@ impl<'src> SymbolStack<'src> {
     }
 
     fn iter<'a>(&'a self) -> impl Iterator<Item = (&'a Identifier<'src>, &'a IRSymbol<'src>)> {
-        let mut iter = self.stack.iter().rev();
-        let symbol_scope = iter.next().unwrap();
-        SymbolStackIter {
-            iter: iter,
-            inner_iter: symbol_scope.scope.iter().rev(),
-            scope_type: symbol_scope.scope_type,
-            escaped_frame: false,
-        }
+        SymbolStackIter::new(self)
     }
 
     fn last_scope_type(&self) -> Option<SymbolScopeType> {
@@ -217,11 +231,26 @@ impl<'src> SymbolStack<'src> {
     }
 
     fn push(&mut self, name: Identifier<'src>, symbol: IRSymbol<'src>) {
-        self.stack.last_mut().unwrap().push(name, symbol);
+        self.last_scope_mut().push(name, symbol);
     }
 
-    fn pop(&mut self) -> Option<(Identifier<'src>, IRSymbol<'src>)> {
-        self.stack.last_mut().and_then(|v| v.pop())
+    fn last_scope_mut(&mut self) -> &mut SymbolScope<'src> {
+        self.stack.last_mut().unwrap()
+    }
+
+    fn provide_function_body(&mut self, name: Identifier<'src>, body_node: Node<'src>) {
+        self.last_scope_mut()
+            .scope
+            .iter_mut()
+            .rev()
+            .find(|(other_name, symbol)| name.0 == other_name.0 && symbol.is_function())
+            .map(|(_, func_symbol)| {
+                if let IRSymbol::Function { info, .. } = func_symbol {
+                    info.body = Some(body_node);
+                } else {
+                    unreachable!()
+                }
+            });
     }
 }
 
@@ -242,9 +271,11 @@ impl<'src> IRBuilder<'src> {
         }
     }
 
-    fn push_block(&mut self) {
+    fn push_block(&mut self, expr: &Spanned<Expr<'src>>) -> Result<'src, ()> {
         self.symbol_stack.push_block();
         self.scope_stack.push(Vec::new());
+        self.scan_block_functions(expr, &mut HashMap::new())?;
+        Ok(())
     }
 
     fn pop_block(&mut self) -> Vec<Node<'src>> {
@@ -289,6 +320,43 @@ impl<'src> IRBuilder<'src> {
         }
         Err(Box::new(UndefinedSymbolError { ident: name }))
     }
+
+    fn scan_block_functions(
+        &mut self,
+        expr: &Spanned<Expr<'src>>,
+        names: &mut HashMap<&'src str, SimpleSpan>,
+    ) -> Result<'src, ()> {
+        Ok(match &expr.0 {
+            Expr::Seq(first, second) => {
+                self.scan_block_functions(first, names)?;
+                self.scan_block_functions(second, names)?;
+            }
+            Expr::Function { name, func } => {
+                if let Some(&other_func_span) = names.get(name.0) {
+                    return Err(Box::new(FunctionRedefinitionError {
+                        name: name.0,
+                        func_span: func.decl_span,
+                        other_func_span,
+                    }));
+                }
+                let func_symbol = IRSymbol::Function {
+                    index: self.func_table.len(),
+                    info: FuncInfo {
+                        name: *name,
+                        args: func.args.clone(),
+                        type_: func.ty.clone(),
+                        span: func.decl_span,
+                        global: self.scope_stack.len() <= 1,
+                        body: None,
+                    },
+                };
+                names.insert(name.0, func.decl_span);
+                self.func_table.push(None);
+                self.symbol_stack.push(*name, func_symbol);
+            }
+            _ => {}
+        })
+    }
 }
 
 impl<'src> IR<'src> {
@@ -302,7 +370,7 @@ impl<'src> IR<'src> {
 
     pub fn from_ast(ast: &Spanned<Expr<'src>>) -> Result<'src, IR<'src>> {
         let mut builder = IRBuilder::new();
-        builder.push_block();
+        builder.push_block(ast)?;
         let node = Self::from_ast_impl(ast, &mut builder)?;
         let scope = builder.pop_block();
         Ok(IR {
@@ -323,7 +391,7 @@ impl<'src> IR<'src> {
         Ok(match &expr.0 {
             Expr::Skip => Node::empty(expr.1),
             Expr::Block(expr) => {
-                builder.push_block();
+                builder.push_block(expr)?;
                 let node = Self::from_ast_impl(expr.as_ref(), builder)?;
                 let scope = builder.pop_block();
                 Node::new(
@@ -401,32 +469,17 @@ impl<'src> IR<'src> {
                     expr.1,
                 )
             }
-            Expr::Function { name, func, .. } => {
-                let func_symbol = IRSymbol::Function {
-                    index: builder.func_table.len(),
-                    info: FuncInfo {
-                        name: *name,
-                        args: func.args.clone(),
-                        span: func.decl_span,
-                        global: builder.scope_stack.len() <= 1,
-                        body: None,
-                    },
-                };
-                builder.func_table.push(None);
-                builder.symbol_stack.push(*name, func_symbol);
+            Expr::Function {
+                name: func_name,
+                func,
+                ..
+            } => {
                 builder.symbol_stack.push_fn_frame(func.args.clone());
-
                 let body_node = Self::from_ast_impl(&func.body, builder)?;
-
                 builder.symbol_stack.pop_fn_frame();
-                let mut func_symbol = builder.symbol_stack.pop().unwrap().1;
-                if let IRSymbol::Function { ref mut info, .. } = func_symbol {
-                    info.body = Some(body_node);
-                } else {
-                    unreachable!()
-                }
-                builder.symbol_stack.push(*name, func_symbol);
-
+                builder
+                    .symbol_stack
+                    .provide_function_body(*func_name, body_node);
                 Node::empty(expr.1)
             }
             Expr::If {
@@ -506,17 +559,23 @@ impl<'src> IR<'src> {
 #[derive(Debug, PartialEq)]
 pub struct Node<'src> {
     span: SimpleSpan,
+    type_: Type<'src>,
     tree: Tree<'src>,
 }
 
 impl<'src> Node<'src> {
     fn new(tree: Tree<'src>, span: SimpleSpan) -> Self {
-        Self { span, tree }
+        Self {
+            span,
+            type_: Type::Unknown,
+            tree,
+        }
     }
 
     fn empty(span: SimpleSpan) -> Self {
         Self {
             span: span.to_end(),
+            type_: Type::Unknown,
             tree: Tree::Scope { nodes: Vec::new() },
         }
     }

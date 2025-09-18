@@ -10,10 +10,11 @@ use crate::{
     value::{BinaryOp, Function, Pointer, UnaryOp, Value},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub enum Expr<'src> {
     Error,
-    Skip,                      // Void
+    #[default]
+    Skip, // Void
     Block(Box<Spanned<Self>>), // any
     Location {
         name: Identifier<'src>,
@@ -40,7 +41,7 @@ pub enum Expr<'src> {
     }, // Void
     Function {
         name: Identifier<'src>,
-        func: Rc<Function<'src>>,
+        func: Function<'src>,
     }, // Void
     Cast(Box<Spanned<Self>>, Polytype<'src>), // Value
     If {
@@ -62,10 +63,4 @@ pub enum Expr<'src> {
     }, // Void
     Continue(Keyword<'src>),   // Void
     Break(Keyword<'src>),      // Void
-}
-
-impl<'src> Default for Expr<'src> {
-    fn default() -> Self {
-        Expr::Skip
-    }
 }

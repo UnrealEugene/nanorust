@@ -2,6 +2,7 @@ use core::ops::Range;
 
 use alloc::format;
 use ariadne::{Label, Report, ReportBuilder, ReportKind};
+use chumsky::span::SimpleSpan;
 use yansi::Color;
 
 use crate::parser::{Identifier, Keyword};
@@ -83,5 +84,42 @@ impl<'src> SemanticError for FunctionCaptureError<'src> {
 
     fn code(&self) -> usize {
         3
+    }
+}
+
+pub struct FunctionRedefinitionError<'src> {
+    pub name: &'src str,
+    pub func_span: SimpleSpan,
+    pub other_func_span: SimpleSpan,
+}
+
+impl<'src> SemanticError for FunctionRedefinitionError<'src> {
+    fn report(&self, file_name: &'static str) -> SemanticReport {
+        Report::build(ReportKind::Error, (file_name, self.func_span.into_range()))
+            .with_message(format!(
+                "function `{}` is defined multiple times",
+                self.name
+            ))
+            .with_label(
+                Label::new((file_name, self.func_span.into_range()))
+                    .with_message(format!("`{}` redefined here", self.name))
+                    .with_color(Color::Red),
+            )
+            .with_label(
+                Label::new((file_name, self.other_func_span.into_range()))
+                    .with_message(format!(
+                        "previous definition of function `{}` is here",
+                        self.name
+                    ))
+                    .with_color(Color::Cyan),
+            )
+            .with_note(format!(
+                "`{}` must be defined only once in this block",
+                self.name
+            ))
+    }
+
+    fn code(&self) -> usize {
+        4
     }
 }

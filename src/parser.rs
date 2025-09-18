@@ -3,7 +3,7 @@ use core::cell::RefCell;
 use crate::{
     expr::*,
     lexer::Token,
-    span::{span_wrap, Spanned},
+    span::{Spanned, span_wrap},
     typing::{BuiltinType, Polytype, Type},
     value::{BinaryOp, Function, UnaryOp, Value},
 };
@@ -27,8 +27,8 @@ impl UnaryOp {
 }
 
 impl BinaryOp {
-    fn parse_sum<'src, I>(
-    ) -> impl Parser<'src, I, Spanned<BinaryOp>, ParseError<'src>> + Copy + Clone
+    fn parse_sum<'src, I>()
+    -> impl Parser<'src, I, Spanned<BinaryOp>, ParseError<'src>> + Copy + Clone
     where
         I: ValueInput<'src, Token = Token<'src>, Span = SimpleSpan>,
     {
@@ -40,8 +40,8 @@ impl BinaryOp {
         .map_with(span_wrap)
     }
 
-    fn parse_product<'src, I>(
-    ) -> impl Parser<'src, I, Spanned<BinaryOp>, ParseError<'src>> + Copy + Clone
+    fn parse_product<'src, I>()
+    -> impl Parser<'src, I, Spanned<BinaryOp>, ParseError<'src>> + Copy + Clone
     where
         I: ValueInput<'src, Token = Token<'src>, Span = SimpleSpan>,
     {
@@ -54,8 +54,8 @@ impl BinaryOp {
         .map_with(span_wrap)
     }
 
-    fn parse_compare<'src, I>(
-    ) -> impl Parser<'src, I, Spanned<BinaryOp>, ParseError<'src>> + Copy + Clone
+    fn parse_compare<'src, I>()
+    -> impl Parser<'src, I, Spanned<BinaryOp>, ParseError<'src>> + Copy + Clone
     where
         I: ValueInput<'src, Token = Token<'src>, Span = SimpleSpan>,
     {
@@ -71,8 +71,8 @@ impl BinaryOp {
         .map_with(span_wrap)
     }
 
-    fn parse_logic_and<'src, I>(
-    ) -> impl Parser<'src, I, Spanned<BinaryOp>, ParseError<'src>> + Copy + Clone
+    fn parse_logic_and<'src, I>()
+    -> impl Parser<'src, I, Spanned<BinaryOp>, ParseError<'src>> + Copy + Clone
     where
         I: ValueInput<'src, Token = Token<'src>, Span = SimpleSpan>,
     {
@@ -83,8 +83,8 @@ impl BinaryOp {
         .map_with(span_wrap)
     }
 
-    fn parse_logic_or<'src, I>(
-    ) -> impl Parser<'src, I, Spanned<BinaryOp>, ParseError<'src>> + Copy + Clone
+    fn parse_logic_or<'src, I>()
+    -> impl Parser<'src, I, Spanned<BinaryOp>, ParseError<'src>> + Copy + Clone
     where
         I: ValueInput<'src, Token = Token<'src>, Span = SimpleSpan>,
     {
@@ -95,8 +95,8 @@ impl BinaryOp {
         .map_with(span_wrap)
     }
 
-    fn parse_range<'src, I>(
-    ) -> impl Parser<'src, I, Spanned<BinaryOp>, ParseError<'src>> + Copy + Clone
+    fn parse_range<'src, I>()
+    -> impl Parser<'src, I, Spanned<BinaryOp>, ParseError<'src>> + Copy + Clone
     where
         I: ValueInput<'src, Token = Token<'src>, Span = SimpleSpan>,
     {
@@ -529,12 +529,11 @@ where
                 )
                 .map_with(|x, e| (x, e.span()))
                 .then(block.clone())
+                .boxed()
                 .map(
                     |(((((name, params), args), ret_type), decl_span), body)| Expr::Function {
                         name,
-                        func: Rc::new(Function::new_function(
-                            params, args, ret_type, decl_span, body,
-                        )),
+                        func: Function::new_function(params, args, ret_type, decl_span, body),
                     },
                 )
                 .map_with(span_wrap)
