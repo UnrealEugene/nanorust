@@ -33,6 +33,13 @@ impl UnaryOp {
             UnaryOp::LogicNot => ty!("fn(bool) -> bool"),
         }
     }
+
+    pub fn get_builtin_name(&self) -> &'static str {
+        match self {
+            UnaryOp::Negate => "__neg",
+            UnaryOp::LogicNot => "__not",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -183,10 +190,6 @@ impl<'src> Pointer<'src> {
         }
     }
 
-    pub fn to_lvalue(self) -> CValue<'src> {
-        CValue::LValue(self)
-    }
-
     pub fn unwrap_absolute(self) -> usize {
         self.try_unwrap_absolute()
             .unwrap_or_else(|| panic!("unwrap of non-absolute pointer {:?}", self))
@@ -311,10 +314,6 @@ impl<'src> Value<'src> {
         }
     }
 
-    pub fn to_flow(self) -> Flow<'src> {
-        Flow::Normal(CValue::RValue(self))
-    }
-
     // pub fn init_closure_captures(
     //     captures: &RefCell<HashMap<String, Pointer<'src>>>,
     //     stack: &EvalStack<'src>,
@@ -325,105 +324,4 @@ impl<'src> Value<'src> {
     //     });
     //     res
     // }
-}
-
-#[derive(Debug, Clone)]
-pub enum CValue<'src> {
-    LValue(Pointer<'src>),
-    RValue(Value<'src>),
-}
-
-impl<'src> Default for CValue<'src> {
-    fn default() -> Self {
-        Self::RValue(Value::default())
-    }
-}
-
-impl<'src> CValue<'src> {
-    // pub fn to_rvalue(self, env: &Environment<'src>) -> Self {
-    //     match self {
-    //         CValue::LValue(ptr) => CValue::RValue(env.get(ptr).unwrap().clone()),
-    //         CValue::RValue(_) => self,
-    //     }
-    // }
-
-    pub fn to_flow(self) -> Flow<'src> {
-        Flow::Normal(self)
-    }
-
-    pub fn unwrap_lvalue(self) -> Pointer<'src> {
-        match self {
-            CValue::LValue(ptr) => ptr,
-            CValue::RValue(_) => panic!("unwrap of non rvalue value"),
-        }
-    }
-
-    pub fn unwrap_rvalue(self) -> Value<'src> {
-        match self {
-            CValue::LValue(_) => panic!("unwrap of non rvalue value"),
-            CValue::RValue(val) => val,
-        }
-    }
-
-    // pub fn unwrap(self, env: &Environment<'src>) -> Value<'src> {
-    //     self.to_rvalue(env).unwrap_rvalue()
-    // }
-}
-
-pub enum Flow<'src, R = CValue<'src>> {
-    Normal(R),
-    Return(Value<'src>),
-    Continue,
-    Break,
-}
-
-impl<'src, T: Default> Default for Flow<'src, T> {
-    fn default() -> Self {
-        Flow::Normal(T::default())
-    }
-}
-
-impl<'src, T> Flow<'src, T> {
-    pub fn chain<R, F: FnOnce() -> Flow<'src, R>>(self, f: F) -> Flow<'src, (T, R)> {
-        self.and_then(|first| match f() {
-            Flow::Normal(second) => Flow::Normal((first, second)),
-            Flow::Return(val) => Flow::Return(val),
-            Flow::Continue => Flow::Continue,
-            Flow::Break => Flow::Break,
-        })
-    }
-
-    pub fn and_then<R, F: FnOnce(T) -> Flow<'src, R>>(self, f: F) -> Flow<'src, R> {
-        match self {
-            Flow::Normal(val) => match f(val) {
-                Flow::Normal(second) => Flow::Normal(second),
-                Flow::Return(val) => Flow::Return(val),
-                Flow::Continue => Flow::Continue,
-                Flow::Break => Flow::Break,
-            },
-            Flow::Return(val) => Flow::Return(val),
-            Flow::Continue => Flow::Continue,
-            Flow::Break => Flow::Break,
-        }
-    }
-
-    pub fn map<R, F: FnOnce(T) -> R>(self, f: F) -> Flow<'src, R> {
-        match self {
-            Flow::Normal(val) => Flow::Normal(f(val)),
-            Flow::Return(val) => Flow::Return(val),
-            Flow::Continue => Flow::Continue,
-            Flow::Break => Flow::Break,
-        }
-    }
-}
-
-impl<'src> Flow<'src> {
-    pub fn to_value(self) -> CValue<'src> {
-        match self {
-            Flow::Normal(val) => val,
-            Flow::Return(val) => CValue::RValue(val),
-            Flow::Continue => CValue::default(),
-            Flow::Break => CValue::default(),
-        }
-    }
 }

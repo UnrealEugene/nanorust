@@ -5,14 +5,21 @@ extern crate slog_scope;
 extern crate slog_async;
 extern crate slog_term;
 
-use std::{error::Error, fmt::Display, io, ops::Range, path::Path, process::ExitCode};
+use std::{
+    error::Error,
+    fmt::Display,
+    io,
+    ops::{Not, Range},
+    path::Path,
+    process::ExitCode,
+};
 
 use ariadne::{Color, Label, Report, ReportKind, Source};
 use chumsky::{error::Rich, input::Input};
 use clap::{Args, Parser, Subcommand};
 use nanorust::{
     interpret::{FuncOverride, InterpretEnv},
-    ir::{RValue, IR},
+    ir::{IR, RValue, RValueInner},
     lexer::Token,
     span::Spanned,
 };
@@ -161,45 +168,45 @@ fn parse_into_tokens<'a, 'src>(
     Ok(tokens)
 }
 
-fn op_arith(f: impl Fn(i32, i32) -> i32 + 'static) -> FuncOverride {
+fn unary<T, R>(f: impl Fn(T) -> R + 'static) -> FuncOverride
+where
+    T: RValueInner,
+    R: RValueInner,
+{
     Box::new(move |args| {
-        let left = args[0]
-            .clone()
-            .number()
-            .ok_or_else(|| "expected a number as a first operand")?;
-        let right = args[1]
-            .clone()
-            .number()
-            .ok_or_else(|| "expected a number as a second operand")?;
-        Ok(RValue::Number(f(left, right)))
+        let arg = T::from_rvalue(args[0].clone())
+            .ok_or_else(|| format!("expected `{}` as an argument", T::type_name()))?;
+        Ok(f(arg).into_rvalue())
     })
 }
 
-fn op_cmp(f: impl Fn(&i32, &i32) -> bool + 'static) -> FuncOverride {
+fn binary<A, B, R>(f: impl Fn(A, B) -> R + 'static) -> FuncOverride
+where
+    A: RValueInner,
+    B: RValueInner,
+    R: RValueInner,
+{
     Box::new(move |args| {
-        let left = args[0]
-            .clone()
-            .number()
-            .ok_or_else(|| "expected a number as a first operand")?;
-        let right = args[1]
-            .clone()
-            .number()
-            .ok_or_else(|| "expected a number as a second operand")?;
-        Ok(RValue::Boolean(f(&left, &right)))
+        let left = A::from_rvalue(args[0].clone())
+            .ok_or_else(|| format!("expected `{}` as a first operand", A::type_name()))?;
+        let right = B::from_rvalue(args[1].clone())
+            .ok_or_else(|| format!("expected `{}` as a second operand", B::type_name()))?;
+        Ok(f(left, right).into_rvalue())
     })
 }
 
-fn op_logic(f: impl Fn(bool, bool) -> bool + 'static) -> FuncOverride {
+fn binary_ref<A, B, R>(f: impl Fn(&A, &B) -> R + 'static) -> FuncOverride
+where
+    A: RValueInner,
+    B: RValueInner,
+    R: RValueInner,
+{
     Box::new(move |args| {
-        let left = args[0]
-            .clone()
-            .boolean()
-            .ok_or_else(|| "expected a boolean as a first operand")?;
-        let right = args[1]
-            .clone()
-            .boolean()
-            .ok_or_else(|| "expected a boolean as a second operand")?;
-        Ok(RValue::Boolean(f(left, right)))
+        let left = A::from_rvalue(args[0].clone())
+            .ok_or_else(|| format!("expected `{}` as a first operand", A::type_name()))?;
+        let right = B::from_rvalue(args[1].clone())
+            .ok_or_else(|| format!("expected `{}` as a second operand", B::type_name()))?;
+        Ok(f(&left, &right).into_rvalue())
     })
 }
 
@@ -246,10 +253,12 @@ fn interpret_string<'src>(
     let ir: IR<'_> = match IR::from_ast(&ast) {
         Ok(ir) => ir,
         Err(error) => {
-            return Ok(InterpretResult::Report(vec![error
-                .report(name)
-                .with_code(format!("E{:02}", error.code()))
-                .finish()]))
+            return Ok(InterpretResult::Report(vec![
+                error
+                    .report(name)
+                    .with_code(format!("E{:02}", error.code()))
+                    .finish(),
+            ]));
         }
     };
     debug!("IR: {:?}", ir.root());
@@ -258,19 +267,22 @@ fn interpret_string<'src>(
     env.register_builtins(
         ir.function_table(),
         [
-            ("__add", op_arith(i32::wrapping_add)),
-            ("__sub", op_arith(i32::wrapping_sub)),
-            ("__mul", op_arith(i32::wrapping_mul)),
-            ("__div", op_arith(i32::wrapping_div)),
-            ("__rem", op_arith(i32::wrapping_rem)),
-            ("__eq", op_cmp(i32::eq)),
-            ("__ne", op_cmp(i32::ne)),
-            ("__le", op_cmp(i32::le)),
-            ("__ge", op_cmp(i32::ge)),
-            ("__lt", op_cmp(i32::lt)),
-            ("__gt", op_cmp(i32::gt)),
-            ("__and", op_logic(|a, b| a && b)),
-            ("__or", op_logic(|a, b| a || b)),
+            ("__add", binary(i32::wrapping_add)),
+            ("__sub", binary(i32::wrapping_sub)),
+            ("__mul", binary(i32::wrapping_mul)),
+            ("__div", binary(i32::wrapping_div)),
+            ("__rem", binary(i32::wrapping_rem)),
+            ("__eq", binary_ref(i32::eq)),
+            ("__ne", binary_ref(i32::ne)),
+            ("__le", binary_ref(i32::le)),
+            ("__ge", binary_ref(i32::ge)),
+            ("__lt", binary_ref(i32::lt)),
+            ("__gt", binary_ref(i32::gt)),
+            ("__and", binary(|a, b| a && b)),
+            ("__or", binary(|a, b| a || b)),
+            ("__or", binary(|a, b| a || b)),
+            ("__neg", unary(i32::wrapping_neg)),
+            ("__not", unary(bool::not)),
             (
                 "println",
                 Box::new(|args: &[RValue]| {

@@ -12,5 +12,7 @@ fn __lt(a: i32, b: i32) -> bool { a < b }
 fn __gt(a: i32, b: i32) -> bool { a > b }
 fn __and(a: bool, b: bool) -> bool { a && b }
 fn __or(a: bool, b: bool) -> bool { a || b }
+fn __neg(a: i32) -> i32 { -a }
+fn __not(a: bool) -> bool { !a }
 
 fn println(args: any) { }
