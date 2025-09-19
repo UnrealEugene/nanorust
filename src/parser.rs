@@ -195,13 +195,13 @@ where
                         .labelled("type annotation")
                         .ignore_then(type_.clone())
                         .or_not()
-                        .map(Option::unwrap_or_default)
+                        .map(Option::unwrap_or_default),
                 )
                 .map(|(name, type_)| Variable { name, ty: type_ })
                 .boxed();
 
             let ret_type = just(Token::Op("->"))
-                .ignore_then(type_.clone())
+                .ignore_then(type_.clone().map_with(span_wrap))
                 .labelled("return type");
 
             let bool_ = select! { Token::Bool(x) => x };
@@ -260,7 +260,12 @@ where
                     .clone()
                     .delimited_by(just(Token::Ctrl("|")), just(Token::Ctrl("|")))
                     .or(just(Token::Op("||")).map(|_| Vec::new()))
-                    .then(ret_type.clone().or_not().map(Option::unwrap_or_default))
+                    .then(
+                        ret_type
+                            .clone()
+                            .or_not()
+                            .map_with(|opt, e| opt.unwrap_or(Spanned(Type::unit(), e.span()))),
+                    )
                     .map_with(|x, e| (x, e.span()))
                     .then(expr.clone())
                     .map(|(((args, ret_type), decl_span), body)| {
@@ -524,7 +529,7 @@ where
                     ret_type
                         .clone()
                         .or_not()
-                        .map(|ret| ret.unwrap_or_else(|| Type::unit())),
+                        .map_with(|opt, e| opt.unwrap_or(Spanned(Type::unit(), e.span()))),
                 )
                 .map_with(|x, e| (x, e.span()))
                 .then(block.clone())

@@ -262,7 +262,6 @@ fn interpret_string<'src>(
             ]));
         }
     };
-    debug!("IR: {:?}", ir.root());
 
     let mut type_env = TypeEnv::new(
         ir.function_table()
@@ -270,9 +269,19 @@ fn interpret_string<'src>(
             .map(|info| info.type_.clone())
             .collect(),
     );
-    type_env
-        .infer_type(&mut ir)
-        .unwrap_or_else(|err| panic!("{}", err));
+    let _ = match type_env.infer_type(&mut ir) {
+        Ok(type_) => type_,
+        Err(error) => {
+            return Ok(InterpretResult::Report(vec![
+                error
+                    .report(name)
+                    .with_code(format!("E{:02}", error.code()))
+                    .finish(),
+            ]));
+        }
+    };
+
+    debug!("IR: {:?}", ir.root());
 
     let mut env = InterpretEnv::new();
     env.register_builtins(

@@ -14,7 +14,7 @@ impl<T> Spanned<T> {
         self.1
     }
 
-    pub fn map<R, F: FnOnce(T) -> R>(self, f: F) -> Spanned<R> {
+    pub fn map<R, F: FnMut(T) -> R>(self, mut f: F) -> Spanned<R> {
         Spanned(f(self.0), self.1)
     }
 }

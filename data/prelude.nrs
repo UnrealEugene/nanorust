@@ -15,4 +15,4 @@ fn __or(a: bool, b: bool) -> bool { a || b }
 fn __neg(a: i32) -> i32 { -a }
 fn __not(a: bool) -> bool { !a }
 
-fn println(args: i32) { }
+fn println<T>(arg: T) { }

@@ -114,6 +114,7 @@ pub struct FuncInfo<'src> {
     pub args: Vec<Identifier<'src>>,
     pub type_: Polytype<'src>,
     pub span: SimpleSpan,
+    pub ret_type_span: SimpleSpan,
     pub global: bool,
     pub body: Option<Node<'src>>,
 }
@@ -317,8 +318,8 @@ impl<'src> IRBuilder<'src> {
         self.scope_stack.pop().unwrap()
     }
 
-    fn push_node(&mut self, node: Node<'src>) {
-        if !node.is_empty() {
+    fn push_node(&mut self, node: Node<'src>, allow_empty: bool) {
+        if allow_empty || !node.is_empty() {
             self.scope_stack.last_mut().unwrap().push(node)
         }
     }
@@ -370,6 +371,7 @@ impl<'src> IRBuilder<'src> {
                         args: func.args.clone(),
                         type_: func.ty.clone(),
                         span: func.decl_span,
+                        ret_type_span: func.ret_type_span,
                         global: self.scope_stack.len() <= 1,
                         body: None,
                     },
@@ -441,11 +443,12 @@ impl<'src> IR<'src> {
             ),
             Expr::Constant(value) => Node::new(
                 Tree::Constant {
-                    value: match value {
-                        crate::value::Value::Number(x) => Value::RValue(RValue::Number(*x)),
-                        crate::value::Value::Boolean(x) => Value::RValue(RValue::Boolean(*x)),
+                    value: Value::RValue(match value {
+                        crate::value::Value::Number(x) => RValue::Number(*x),
+                        crate::value::Value::Boolean(x) => RValue::Boolean(*x),
+                        crate::value::Value::Tuple(args) if args.is_empty() => RValue::Unit,
                         _ => todo!(),
-                    },
+                    }),
                 },
                 expr.1,
             ),
@@ -491,19 +494,15 @@ impl<'src> IR<'src> {
             ),
             Expr::Seq(first, second) => {
                 let first_node = Self::from_ast_impl(first.as_ref(), builder)?;
-                builder.push_node(first_node);
+                builder.push_node(first_node, false);
                 let second_node = Self::from_ast_impl(second.as_ref(), builder)?;
                 match &second.as_ref().0 {
                     Expr::Seq(..) => {}
-                    _ => builder.push_node(second_node),
+                    _ => builder.push_node(second_node, true),
                 }
                 Node::empty(expr.1)
             }
-            Expr::Let {
-                var,
-                is_mut,
-                val,
-            } => {
+            Expr::Let { var, is_mut, val } => {
                 let value_node = Self::from_ast_impl(val.as_ref(), builder)?;
                 builder.symbol_stack.push(var.name, IRSymbol::Variable);
                 Node::new(
@@ -597,6 +596,12 @@ impl<'src> IR<'src> {
                 }
                 Node::new(Tree::Continue, expr.1)
             }
+            Expr::Tuple(args) if args.is_empty() => Node::new(
+                Tree::Constant {
+                    value: Value::RValue(RValue::Unit),
+                },
+                expr.1,
+            ),
             _ => todo!(),
         })
     }
@@ -605,7 +610,7 @@ impl<'src> IR<'src> {
 #[derive(Debug)]
 pub struct Node<'src> {
     span: SimpleSpan,
-    _type: Type<'src>,
+    type_: Type<'src>,
     tree: Tree<'src>,
 }
 
@@ -613,7 +618,7 @@ impl<'src> Node<'src> {
     fn new(tree: Tree<'src>, span: SimpleSpan) -> Self {
         Self {
             span,
-            _type: Type::Unknown,
+            type_: Type::Unknown,
             tree,
         }
     }
@@ -621,7 +626,7 @@ impl<'src> Node<'src> {
     fn empty(span: SimpleSpan) -> Self {
         Self {
             span: span.to_end(),
-            _type: Type::Unknown,
+            type_: Type::Unknown,
             tree: Tree::Scope { nodes: Vec::new() },
         }
     }
@@ -643,6 +648,10 @@ impl<'src> Node<'src> {
             Tree::Scope { nodes } => nodes.is_empty(),
             _ => false,
         }
+    }
+
+    pub fn set_type(&mut self, ty: Type<'src>) {
+        self.type_ = ty;
     }
 }
 

@@ -208,6 +208,7 @@ pub struct Function<'src> {
     pub params: Vec<Identifier<'src>>,
     pub args: Vec<Identifier<'src>>,
     pub decl_span: SimpleSpan,
+    pub ret_type_span: SimpleSpan,
     pub body: Box<Spanned<Expr<'src>>>,
     pub ty: Polytype<'src>,
 }
@@ -216,7 +217,7 @@ impl<'src> Function<'src> {
     pub fn new_function(
         type_params: Vec<Identifier<'src>>,
         vars: Vec<Variable<'src>>,
-        ret_type: Type<'src>,
+        ret_type: Spanned<Type<'src>>,
         decl_span: SimpleSpan,
         body: Spanned<Expr<'src>>,
     ) -> Self {
@@ -224,7 +225,7 @@ impl<'src> Function<'src> {
             .into_iter()
             .map(|var| (var.name, var.ty))
             .unzip();
-        let func_ty = Type::Function(var_types, Box::new(ret_type));
+        let func_ty = Type::Function(var_types, Box::new(ret_type.0));
         assert!(
             !func_ty.has_unknowns(),
             "explicit types are required in function signatures"
@@ -234,13 +235,14 @@ impl<'src> Function<'src> {
             args: var_names,
             body: Box::new(body),
             decl_span: decl_span,
+            ret_type_span: ret_type.1,
             ty: Polytype::from(type_params, func_ty),
         }
     }
 
     pub fn new_closure(
         vars: Vec<Variable<'src>>,
-        ret_type: Type<'src>,
+        ret_type: Spanned<Type<'src>>,
         decl_span: SimpleSpan,
         body: Spanned<Expr<'src>>,
     ) -> Self {
@@ -253,7 +255,8 @@ impl<'src> Function<'src> {
             args: var_names,
             body: Box::new(body),
             decl_span: decl_span,
-            ty: Polytype::from_unknown(Type::Function(var_types, Box::new(ret_type))),
+            ret_type_span: ret_type.1,
+            ty: Polytype::from_unknown(Type::Function(var_types, Box::new(ret_type.0))),
         }
     }
 }

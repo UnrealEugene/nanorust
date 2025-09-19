@@ -5,37 +5,17 @@ use core::fmt::{self, Display};
 use core::hash::Hash;
 use core::result;
 
-use alloc::format;
-use alloc::string::String;
 use alloc::{boxed::Box, vec::Vec};
 
+use chumsky::span::SimpleSpan;
 use hashbrown::{HashMap, HashSet};
 
+use crate::error::*;
 use crate::ir::{FuncInfo, IR, Node, RValue, RValueInner, Reference, Tree, Value};
 use crate::parser::Identifier;
+use crate::span::Spanned;
 
-pub type Result<T> = result::Result<T, TypeError>;
-
-pub struct TypeError {
-    msg: String,
-}
-
-impl TypeError {
-    fn new<S>(msg: S) -> TypeError
-    where
-        String: From<S>,
-    {
-        TypeError {
-            msg: String::from(msg),
-        }
-    }
-}
-
-impl Display for TypeError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.msg.fmt(f)
-    }
-}
+pub type Result<'src, T> = result::Result<T, Box<dyn SemanticError + 'src>>;
 
 trait HMType<'src>: Sized {
     fn get_free_vars(&self) -> HashSet<TypeVar>;
@@ -51,6 +31,21 @@ impl<'src, T: HMType<'src>> HMType<'src> for Vec<T> {
 
     fn substitute(&self, subst: &Subst<'src>) -> Self {
         self.iter().map(|x| x.substitute(subst)).collect()
+    }
+}
+
+impl<'src, T: HMType<'src>> HMType<'src> for Vec<(Identifier<'src>, T)> {
+    fn get_free_vars(&self) -> HashSet<TypeVar> {
+        self.iter()
+            .map(|(_, x)| x)
+            .map(T::get_free_vars)
+            .fold(HashSet::new(), |acc, t| acc.union(&t).cloned().collect())
+    }
+
+    fn substitute(&self, subst: &Subst<'src>) -> Self {
+        self.iter()
+            .map(|(ident, x)| (*ident, x.substitute(subst)))
+            .collect()
     }
 }
 
@@ -85,17 +80,14 @@ impl Display for TypeVar {
 }
 
 impl TypeVar {
-    fn bind<'src>(&self, ty: &Type<'src>) -> Result<Subst<'src>> {
+    fn bind<'src>(&self, ty: &Type<'src>) -> UnifyResult<'src> {
         if let Type::Variable(u) = ty {
             if u == self {
                 return Ok(Subst::new());
             }
         }
         if ty.get_free_vars().contains(self) {
-            return Err(TypeError::new(format!(
-                "occur check fails: {} vs {}",
-                self, ty
-            )));
+            return Err(UnifyError::OccursCheck);
         }
         let mut s = Subst::new();
         s.0.insert(self.clone(), ty.clone());
@@ -124,6 +116,39 @@ impl TypeVarGen {
     }
 }
 
+enum UnifyError {
+    OccursCheck,
+    TypeMismatch,
+    IllegalCast,
+    LessGeneralType,
+}
+
+impl UnifyError {
+    fn to_semantic_error<'src>(
+        self,
+        span: SimpleSpan,
+        ty1: &Type<'src>,
+        ty2: &Type<'src>,
+    ) -> Box<dyn SemanticError + 'src> {
+        match self {
+            UnifyError::OccursCheck => Box::new(RecursiveTypeError {
+                span,
+                first_type: ty1.clone(),
+                second_type: ty2.clone(),
+            }),
+            UnifyError::TypeMismatch => Box::new(TypeMismatchError {
+                span,
+                expected_type: ty1.clone(),
+                actual_type: ty2.clone(),
+            }),
+            UnifyError::IllegalCast => todo!(),
+            UnifyError::LessGeneralType => todo!(),
+        }
+    }
+}
+
+type UnifyResult<'src> = result::Result<Subst<'src>, UnifyError>;
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub enum Type<'src> {
     Builtin(BuiltinType),
@@ -137,6 +162,7 @@ pub enum Type<'src> {
     Function(Vec<Self>, Box<Self>),
     LValue {
         mutable: bool,
+        def_ident: Identifier<'src>,
         inner: Box<Self>,
     },
     #[default]
@@ -186,6 +212,7 @@ impl<'src> Display for Type<'src> {
             }
             Type::LValue {
                 mutable: _,
+                def_ident: _,
                 inner: ty,
             } => ty.fmt(f),
             Type::Unknown => write!(f, "?"),
@@ -208,6 +235,7 @@ impl<'src> HMType<'src> for Type<'src> {
                 .collect(),
             Type::LValue {
                 mutable: _,
+                def_ident: _,
                 inner: ty,
             } => ty.get_free_vars(),
             Type::Unknown => unreachable!(),
@@ -232,10 +260,12 @@ impl<'src> HMType<'src> for Type<'src> {
                 Type::Function(args.substitute(subst), Box::new(ret.substitute(subst)))
             }
             Type::LValue {
-                mutable: is_mut,
+                mutable,
+                def_ident,
                 inner: ty,
             } => Type::LValue {
-                mutable: *is_mut,
+                mutable: *mutable,
+                def_ident: *def_ident,
                 inner: Box::new(ty.substitute(subst)),
             },
             Type::Unknown => unreachable!(),
@@ -286,10 +316,12 @@ impl<'src> Type<'src> {
                 Box::new(ret.replace_unknowns(tvg)),
             ),
             Type::LValue {
-                mutable: is_mut,
+                mutable,
+                def_ident,
                 inner: ty,
             } => Type::LValue {
-                mutable: is_mut,
+                mutable,
+                def_ident,
                 inner: Box::new(ty.replace_unknowns(tvg)),
             },
             Type::Unknown => Type::Variable(tvg.next()),
@@ -327,10 +359,12 @@ impl<'src> Type<'src> {
                 Box::new(ret.instantiate(type_vars, offset)),
             ),
             Type::LValue {
-                mutable: is_mut,
+                mutable,
+                def_ident,
                 inner: ty,
             } => Type::LValue {
-                mutable: is_mut,
+                mutable,
+                def_ident,
                 inner: Box::new(ty.instantiate(type_vars, offset)),
             },
             Type::Unknown => self,
@@ -367,7 +401,7 @@ impl<'src> Type<'src> {
         Type::Variable(tvg.next())
     }
 
-    fn unify_vec(first: &Vec<Self>, second: &Vec<Self>) -> Result<Subst<'src>> {
+    fn unify_vec(first: &Vec<Self>, second: &Vec<Self>) -> UnifyResult<'src> {
         assert!(first.len() == second.len());
         first
             .iter()
@@ -381,11 +415,12 @@ impl<'src> Type<'src> {
             })
     }
 
-    fn unify(&self, other: &Self) -> Result<Subst<'src>> {
+    fn unify(&self, other: &Self) -> UnifyResult<'src> {
         match (self, other) {
             (
                 Type::LValue {
                     mutable: _,
+                    def_ident: _,
                     inner: ty1,
                 },
                 ty2,
@@ -394,6 +429,7 @@ impl<'src> Type<'src> {
                 ty1,
                 Type::LValue {
                     mutable: _,
+                    def_ident: _,
                     inner: ty2,
                 },
             ) => ty1.unify(ty2),
@@ -421,11 +457,11 @@ impl<'src> Type<'src> {
                 let subst2 = ret1.substitute(&subst1).unify(&ret2.substitute(&subst1))?;
                 Ok(subst1.compose(&subst2))
             }
-            (ty1, ty2) => Err(TypeError::new(format!("type mismatch: {} vs {}", ty1, ty2))),
+            (_, _) => Err(UnifyError::TypeMismatch),
         }
     }
 
-    fn cast_unify(&self, other: &Self) -> Result<Subst<'src>> {
+    fn cast_unify(&self, other: &Self) -> UnifyResult<'src> {
         match (self, other) {
             (Type::Builtin(..), Type::Builtin(..)) => Ok(Subst::new()),
             (
@@ -441,6 +477,7 @@ impl<'src> Type<'src> {
             (
                 Type::LValue {
                     mutable: _,
+                    def_ident: _,
                     inner: ty1,
                 },
                 ty2,
@@ -449,20 +486,18 @@ impl<'src> Type<'src> {
                 ty1,
                 Type::LValue {
                     mutable: _,
+                    def_ident: _,
                     inner: ty2,
                 },
             ) => ty1.cast_unify(ty2),
-            (ty1, ty2) => Err(TypeError::new(format!(
-                "non-primitive cast: {} into {}",
-                ty1, ty2
-            ))),
+            (_, _) => Err(UnifyError::IllegalCast),
         }
     }
 
     fn is_generalization_of_vec(
         left: &Vec<Type<'src>>,
         right: &Vec<Type<'src>>,
-    ) -> Result<Subst<'src>> {
+    ) -> UnifyResult<'src> {
         left.iter()
             .zip(right.iter())
             .fold(Ok(Subst::new()), |res, (t1, t2)| {
@@ -473,11 +508,12 @@ impl<'src> Type<'src> {
             })
     }
 
-    fn is_generalization_of(&self, other: &Type<'src>) -> Result<Subst<'src>> {
+    fn is_generalization_of(&self, other: &Type<'src>) -> UnifyResult<'src> {
         match (self, other) {
             (
                 Type::LValue {
                     mutable: _,
+                    def_ident: _,
                     inner: ty1,
                 },
                 ty2,
@@ -486,16 +522,14 @@ impl<'src> Type<'src> {
                 ty1,
                 Type::LValue {
                     mutable: _,
+                    def_ident: _,
                     inner: ty2,
                 },
             ) => ty1.is_generalization_of(ty2),
             (Type::Builtin(t1), Type::Builtin(t2)) if t1 == t2 => Ok(Subst::new()),
             (Type::Concrete(t1), Type::Concrete(t2)) if t1.0 == t2.0 => Ok(Subst::new()),
             (Type::Variable(var), t) => var.bind(t),
-            (t, Type::Variable(_)) => Err(TypeError::new(format!(
-                "expected a type variable, found {}",
-                t
-            ))),
+            (_, Type::Variable(_)) => Err(UnifyError::LessGeneralType),
             (
                 Type::Reference {
                     mutable: is_mut1,
@@ -516,10 +550,7 @@ impl<'src> Type<'src> {
                 let subst2 = ret1.is_generalization_of(ret2)?;
                 subst1.strict_compose(&subst2)
             }
-            (ty1, ty2) => Err(TypeError::new(format!(
-                "type mismatch 2: {} vs {}",
-                ty1, ty2
-            ))),
+            (_, _) => Err(UnifyError::TypeMismatch),
         }
     }
 
@@ -673,7 +704,7 @@ impl<'src> Subst<'src> {
         new_self
     }
 
-    fn strict_compose(&self, other: &Self) -> Result<Self> {
+    fn strict_compose(&self, other: &Self) -> UnifyResult<'src> {
         let mut new_self = self.clone();
         for (var, ty2) in other.0.iter() {
             if !self.0.contains_key(var) {
@@ -681,10 +712,7 @@ impl<'src> Subst<'src> {
             } else {
                 let ty1 = self.0.get(var).unwrap();
                 if ty1 != ty2 {
-                    return Err(TypeError::new(format!(
-                        "type mismatch in generalization check: {} vs {}",
-                        ty1, ty2
-                    )));
+                    return Err(UnifyError::TypeMismatch);
                 }
             }
         }
@@ -705,7 +733,7 @@ impl<'src> Subst<'src> {
 
 #[derive(Debug, Clone)]
 pub struct TypeEnv<'src> {
-    symbol_stack: Vec<LetType<'src>>,
+    symbol_stack: Vec<(Identifier<'src>, LetType<'src>)>,
     func_type_list: Vec<Polytype<'src>>,
     func_ret_stack: Vec<Type<'src>>,
 }
@@ -720,7 +748,7 @@ impl<'src> HMType<'src> for TypeEnv<'src> {
             symbol_stack: self
                 .symbol_stack
                 .iter()
-                .map(|t| t.substitute(subst))
+                .map(|(ident, t)| (*ident, t.substitute(subst)))
                 .collect(),
             func_type_list: self.func_type_list.clone(),
             func_ret_stack: self
@@ -748,7 +776,19 @@ impl<'src, I: TupleChain<'src>> TupleChain<'src> for (I, Type<'src>) {
     }
 }
 
+impl<'src, I: TupleChain<'src>> TupleChain<'src> for (I, Spanned<Type<'src>>) {
+    fn map<F: FnMut(Type<'src>) -> Type<'src>>(self, mut f: F) -> Self {
+        (self.0.map(&mut f), self.1.map(f))
+    }
+}
+
 impl<'src, I: TupleChain<'src>> TupleChain<'src> for (I, Polytype<'src>) {
+    fn map<F: FnMut(Type<'src>) -> Type<'src>>(self, f: F) -> Self {
+        (self.0.map(f), self.1)
+    }
+}
+
+impl<'src, I: TupleChain<'src>> TupleChain<'src> for (I, Spanned<Polytype<'src>>) {
     fn map<F: FnMut(Type<'src>) -> Type<'src>>(self, f: F) -> Self {
         (self.0.map(f), self.1)
     }
@@ -757,6 +797,18 @@ impl<'src, I: TupleChain<'src>> TupleChain<'src> for (I, Polytype<'src>) {
 impl<'src, I: TupleChain<'src>> TupleChain<'src> for (I, Vec<Type<'src>>) {
     fn map<F: FnMut(Type<'src>) -> Type<'src>>(self, mut f: F) -> Self {
         (self.0.map(&mut f), self.1.into_iter().map(f).collect())
+    }
+}
+
+impl<'src, I: TupleChain<'src>> TupleChain<'src> for (I, Vec<Spanned<Type<'src>>>) {
+    fn map<F: FnMut(Type<'src>) -> Type<'src>>(self, mut f: F) -> Self {
+        (self.0.map(&mut f), {
+            let mut vec = Vec::new();
+            for ty in self.1.into_iter() {
+                vec.push(Spanned(f(ty.0), ty.1));
+            }
+            vec
+        })
     }
 }
 
@@ -790,11 +842,11 @@ impl<'g, 'src, I: TupleChain<'src>> TypeEnvMonadState<'g, 'src, I> {
     }
 }
 
-struct TypeEnvMonad<'g, 'src, I>(Result<TypeEnvMonadState<'g, 'src, I>>);
+struct TypeEnvMonad<'g, 'src, I>(Result<'src, TypeEnvMonadState<'g, 'src, I>>);
 
 #[allow(dead_code)]
 impl<'g, 'src> TypeEnvMonad<'g, 'src, Type<'src>> {
-    fn return_last(self) -> Result<(Subst<'src>, Type<'src>)> {
+    fn return_last(self) -> Result<'src, (Subst<'src>, Type<'src>)> {
         self.0.map(|st| {
             let new_val = st.val.substitute(&st.subst);
             (st.subst, new_val)
@@ -811,13 +863,40 @@ impl<'g, 'src, I: TupleChain<'src>> TypeEnvMonad<'g, 'src, (I, Type<'src>)> {
         }))
     }
 
-    fn unified_with(self, ty: Type<'src>) -> Self {
-        self.substitute(|val| val.1.unify(&ty))
+    fn unified_with(self, span: SimpleSpan, ty: Type<'src>) -> Self {
+        self.substitute(|val| {
+            val.1
+                .unify(&ty)
+                .map_err(|err| err.to_semantic_error(span, &ty, &val.1))
+        })
     }
 
-    fn return_last(self) -> Result<(Subst<'src>, Type<'src>)> {
+    fn spanned(self, span: SimpleSpan) -> TypeEnvMonad<'g, 'src, (I, Spanned<Type<'src>>)> {
+        TypeEnvMonad(self.0.map(|st| st.map_val(|(l, r)| (l, Spanned(r, span)))))
+    }
+}
+
+#[allow(dead_code)]
+impl<'g, 'src, I: TupleChain<'src>> TypeEnvMonad<'g, 'src, (I, Spanned<Type<'src>>)> {
+    fn generalized(self) -> TypeEnvMonad<'g, 'src, (I, Spanned<Polytype<'src>>)> {
+        TypeEnvMonad(self.0.map(|st| {
+            let new_ty = Spanned(st.env.generalize(&st.val.1.0), st.val.1.1);
+            st.map_val(|(l, _)| (l, new_ty))
+        }))
+    }
+
+    fn unified_with(self, ty: Type<'src>) -> Self {
+        self.substitute(|val| {
+            val.1
+                .0
+                .unify(&ty)
+                .map_err(|err| err.to_semantic_error(val.1.1, &ty, &val.1.0))
+        })
+    }
+
+    fn return_last(self) -> Result<'src, (Subst<'src>, Spanned<Type<'src>>)> {
         self.0.map(|st| {
-            let new_val = st.val.1.substitute(&st.subst);
+            let new_val = st.val.1.map(|ty| ty.substitute(&st.subst));
             (st.subst, new_val)
         })
     }
@@ -835,7 +914,7 @@ impl<'g, 'src, I: TupleChain<'src>> TypeEnvMonad<'g, 'src, (I, Polytype<'src>)> 
 
 #[allow(dead_code)]
 impl<'g, 'src, I: TupleChain<'src>> TypeEnvMonad<'g, 'src, I> {
-    fn infer_type(self, node: &mut Node<'src>) -> TypeEnvMonad<'g, 'src, (I, Type<'src>)> {
+    fn infer_type(self, node: &mut Node<'src>) -> TypeEnvMonad<'g, 'src, (I, Spanned<Type<'src>>)> {
         TypeEnvMonad(self.0.and_then(|st| {
             let (subst, ty) = st.env.infer_type_impl(node, st.tvg)?;
             Ok(st.substitute(&subst).map_val(|st_val| (st_val, ty)))
@@ -845,7 +924,7 @@ impl<'g, 'src, I: TupleChain<'src>> TypeEnvMonad<'g, 'src, I> {
     fn infer_types(
         self,
         exprs: &mut Vec<Node<'src>>,
-    ) -> TypeEnvMonad<'g, 'src, (I, Vec<Type<'src>>)> {
+    ) -> TypeEnvMonad<'g, 'src, (I, Vec<Spanned<Type<'src>>>)> {
         TypeEnvMonad(
             exprs
                 .iter_mut()
@@ -860,11 +939,18 @@ impl<'g, 'src, I: TupleChain<'src>> TypeEnvMonad<'g, 'src, I> {
     }
 
     fn process_function(self, func_info: &mut FuncInfo<'src>) -> Self {
-        self.gen_fresh_types(func_info.args.len())
-            .gen_fresh_type()
+        self.push_polytype(func_info.type_.clone())
+            .instantiated()
+            .and_then(|(l, func_ty)| {
+                let Type::Function(args_ty, ret_ty) = func_ty else {
+                    unreachable!();
+                };
+                Ok(((l, args_ty), ret_ty.as_ref().clone()))
+            })
             .mutate_env(|env, ((_, args_ty), ret_ty)| {
-                for ty in args_ty.iter() {
-                    env.symbol_stack.push(LetType::LetMut(ty.clone()));
+                for (i, ty) in args_ty.iter().enumerate() {
+                    env.symbol_stack
+                        .push((*func_info.args.get(i).unwrap(), LetType::LetMut(ty.clone())));
                 }
                 env.func_ret_stack.push(ret_ty.clone())
             })
@@ -875,15 +961,19 @@ impl<'g, 'src, I: TupleChain<'src>> TypeEnvMonad<'g, 'src, I> {
                 }
                 env.func_ret_stack.pop();
             })
-            .unify(|((_, ret_ty), body_ty)| (ret_ty, body_ty))
+            .unify(
+                |(_, body_ty)| body_ty.1,
+                |((_, ret_ty), body_ty)| (ret_ty, &body_ty.0),
+            )
             .push_any(func_info.type_.clone())
             .instantiated()
             .and_then(|((((x, args_ty), ret_ty), _), func_ty)| {
                 let inferred_ty = Type::Function(args_ty, Box::new(ret_ty));
                 let offset = inferred_ty.next_free_var();
-                let _ = inferred_ty
-                    .instantiate(&Vec::new(), offset)
-                    .is_generalization_of(&func_ty)?;
+                let inferred_ty = inferred_ty.instantiate(&Vec::new(), offset);
+                inferred_ty
+                    .is_generalization_of(&func_ty)
+                    .map_err(|err| err.to_semantic_error(func_info.span, &func_ty, &inferred_ty))?;
                 Ok(x)
             })
     }
@@ -895,24 +985,34 @@ impl<'g, 'src, I: TupleChain<'src>> TypeEnvMonad<'g, 'src, I> {
         self
     }
 
-    fn substitute<F: FnOnce(&I) -> Result<Subst<'src>>>(self, f: F) -> Self {
+    fn substitute<F: FnOnce(&I) -> Result<'src, Subst<'src>>>(self, f: F) -> Self {
         TypeEnvMonad(self.0.and_then(|st| {
             let subst = f(&st.val)?;
             Ok(st.substitute(&subst))
         }))
     }
 
-    fn unify<F: FnOnce(&I) -> (&Type<'src>, &Type<'src>)>(self, f: F) -> Self {
+    fn unify<S, F>(self, get_span: S, f: F) -> Self
+    where
+        S: FnOnce(&I) -> SimpleSpan,
+        F: FnOnce(&I) -> (&Type<'src>, &Type<'src>),
+    {
         self.substitute(|val| {
-            let (t1, t2) = f(val);
-            t1.unify(t2)
+            let (ty1, ty2) = f(val);
+            ty1.unify(ty2)
+                .map_err(|err| err.to_semantic_error(get_span(val), ty1, ty2))
         })
     }
 
-    fn unify_cloned<F: FnOnce(I) -> (Type<'src>, Type<'src>)>(self, f: F) -> Self {
+    fn unify_cloned<S, F>(self, get_span: S, f: F) -> Self
+    where
+        S: FnOnce(&I) -> SimpleSpan,
+        F: FnOnce(I) -> (Type<'src>, Type<'src>),
+    {
         self.substitute(|val| {
-            let (t1, t2) = f(val.clone());
-            t1.unify(&t2)
+            let (ty1, ty2) = f(val.clone());
+            ty1.unify(&ty2)
+                .map_err(|err| err.to_semantic_error(get_span(val), &ty1, &ty2))
         })
     }
 
@@ -965,7 +1065,7 @@ impl<'g, 'src, I: TupleChain<'src>> TypeEnvMonad<'g, 'src, I> {
         TypeEnvMonad(self.0.map(|st| st.map_val(f)))
     }
 
-    fn and_then<R, F: FnOnce(I) -> Result<R>>(self, f: F) -> TypeEnvMonad<'g, 'src, R> {
+    fn and_then<R, F: FnOnce(I) -> Result<'src, R>>(self, f: F) -> TypeEnvMonad<'g, 'src, R> {
         TypeEnvMonad(self.0.and_then(|st: TypeEnvMonadState<'g, 'src, I>| {
             Ok(TypeEnvMonadState {
                 tvg: st.tvg,
@@ -976,14 +1076,14 @@ impl<'g, 'src, I: TupleChain<'src>> TypeEnvMonad<'g, 'src, I> {
         }))
     }
 
-    fn return_unit(self) -> Result<(Subst<'src>, Type<'src>)> {
-        self.0.map(|st| (st.subst, Type::unit()))
+    fn return_unit(self, span: SimpleSpan) -> Result<'src, (Subst<'src>, Spanned<Type<'src>>)> {
+        self.0.map(|st| (st.subst, Spanned(Type::unit(), span)))
     }
 
-    fn return_never(self) -> Result<(Subst<'src>, Type<'src>)> {
+    fn return_never(self, span: SimpleSpan) -> Result<'src, (Subst<'src>, Spanned<Type<'src>>)> {
         self.0.map(|st| {
             let never_val = Type::never(st.tvg);
-            (st.subst, never_val)
+            (st.subst, Spanned(never_val, span))
         })
     }
 }
@@ -1020,17 +1120,19 @@ impl<'src> TypeEnv<'src> {
     fn infer_type_reference(&self, reference: &Reference, tvg: &mut TypeVarGen) -> Type<'src> {
         match reference {
             Reference::Function(index) => self.func_type_list.get(*index).unwrap().instantiate(tvg),
-            Reference::Variable(index) => match self
+            Reference::Variable(index) => match &self
                 .symbol_stack
                 .get(self.symbol_stack.len() - *index - 1)
                 .unwrap()
             {
-                LetType::Let(ty) => Type::LValue {
+                (name, LetType::Let(ty)) => Type::LValue {
                     mutable: false,
+                    def_ident: *name,
                     inner: Box::new(ty.instantiate(tvg)),
                 },
-                LetType::LetMut(ty) => Type::LValue {
+                (name, LetType::LetMut(ty)) => Type::LValue {
                     mutable: true,
+                    def_ident: *name,
                     inner: Box::new(ty.clone()),
                 },
             },
@@ -1041,63 +1143,108 @@ impl<'src> TypeEnv<'src> {
         &mut self,
         node: &mut Node<'src>,
         tvg: &mut TypeVarGen,
-    ) -> Result<(Subst<'src>, Type<'src>)> {
-        match node.tree_mut() {
+    ) -> Result<'src, (Subst<'src>, Spanned<Type<'src>>)> {
+        let node_span = node.span();
+        let result = match node.tree_mut() {
             Tree::Constant { value } => Ok((
                 Subst::new(),
-                match value {
-                    Value::RValue(rvalue) => match rvalue {
-                        RValue::Unit => Type::unit(),
-                        RValue::Number(_) => i32::get_type(),
-                        RValue::Boolean(_) => bool::get_type(),
-                        RValue::Reference(reference) => self.infer_type_reference(reference, tvg),
+                Spanned(
+                    match value {
+                        Value::RValue(rvalue) => match rvalue {
+                            RValue::Unit => Type::unit(),
+                            RValue::Number(_) => i32::get_type(),
+                            RValue::Boolean(_) => bool::get_type(),
+                            RValue::Reference(reference) => {
+                                self.infer_type_reference(reference, tvg)
+                            }
+                        },
+                        Value::LValue(reference) => self.infer_type_reference(reference, tvg),
                     },
-                    Value::LValue(reference) => self.infer_type_reference(reference, tvg),
-                },
+                    node_span,
+                ),
             )),
-            Tree::Scope { nodes } if nodes.is_empty() => Ok((Subst::new(), Type::unit())),
+            Tree::Scope { nodes } if nodes.is_empty() => {
+                Ok((Subst::new(), Spanned(Type::unit(), node_span)))
+            }
             Tree::Scope { nodes } => {
                 let start_len = self.symbol_stack.len();
                 self.monad(tvg)
                     .infer_types(nodes)
-                    .map(|((), mut types)| {
-                        let last_type = types.pop().unwrap();
-                        (((), types), last_type)
-                    })
-                    .unify_cloned(|((_, types), _)| {
-                        (
-                            Type::Tuple((0..types.len()).map(|_| Type::unit()).collect()),
-                            Type::Tuple(types),
-                        )
-                    })
                     .mutate_env(|env, _| env.symbol_stack.truncate(start_len))
+                    .map(|(l, tys)| (l, tys.into_iter().last().unwrap()))
                     .return_last()
             }
             Tree::Call { callee, args } => self
                 .monad(tvg)
                 .infer_type(callee)
-                .infer_types(args)
-                .gen_fresh_type()
-                .unify_cloned(|(((_, callee_ty), args_vec), ret_ty)| {
-                    (callee_ty, Type::Function(args_vec, Box::new(ret_ty)))
+                .and_then(|st| match &st.1.0 {
+                    Type::Function(args_ty, _) => {
+                        if args.len() == args_ty.len() {
+                            Ok((st.clone(), args_ty.clone()))
+                        } else {
+                            Err(Box::new(ArgumentCountMismatchError {
+                                callee_span: callee.span(),
+                                expected_count: args_ty.len(),
+                                actual_count: args.len(),
+                            }))
+                        }
+                    }
+                    _ => Ok((st, Vec::new())), // will error later
                 })
+                .infer_types(args)
+                .and_then(|st| {
+                    if !st.0.1.is_empty() {
+                        for (ty1, ty2) in st.0.1.iter().zip(st.1.iter()) {
+                            // discard Subst just for errors
+                            ty1.unify(&ty2.0)
+                                .map_err(|err| err.to_semantic_error(ty2.1, &ty1, &ty2.0))?;
+                        }
+                    }
+                    Ok((st.0.0, st.1))
+                })
+                .gen_fresh_type()
+                .spanned(node_span)
+                .unify_cloned(
+                    |_| callee.span(),
+                    |(((_, callee_ty), args_vec), ret_ty)| {
+                        (
+                            callee_ty.0,
+                            Type::Function(
+                                args_vec.into_iter().map(|ty| ty.0).collect(),
+                                Box::new(ret_ty.0),
+                            ),
+                        )
+                    },
+                )
                 .return_last(),
             Tree::Assign { assignee, value } => self
                 .monad(tvg)
                 .infer_type(assignee)
-                .and_then(|st| match &st.1 {
+                .and_then(|st| match &st.1.0 {
                     Type::LValue {
-                        mutable: is_mut,
+                        mutable,
+                        def_ident,
                         inner: _,
-                    } if *is_mut => Ok(st),
-                    Type::LValue { .. } => Err(TypeError::new(
-                        "cannot assign to value, which is behind a `&` reference",
-                    )),
-                    _ => Err(TypeError::new("cannot assign to this expression")),
+                    } => {
+                        if *mutable {
+                            Ok(st)
+                        } else {
+                            Err(Box::new(ImmutableAssignmentError {
+                                assign_span: node_span,
+                                var_def: *def_ident,
+                            }))
+                        }
+                    }
+                    _ => Err(Box::new(IllegalAssignmentError {
+                        span: assignee.span(),
+                    })),
                 })
                 .infer_type(value)
-                .unify(|((_, lhs_ty), rhs_ty)| (lhs_ty, rhs_ty))
-                .return_unit(),
+                .unify(
+                    |(_, ty)| ty.1,
+                    |((_, lhs_ty), rhs_ty)| (&lhs_ty.0, &rhs_ty.0),
+                )
+                .return_unit(node_span),
             Tree::Let {
                 variable,
                 mutable,
@@ -1108,19 +1255,24 @@ impl<'src> TypeEnv<'src> {
                     .push_polytype(variable.ty.clone())
                     .instantiated()
                     .infer_type(value)
-                    .unify(|((_, val_ty), var_ty)| (val_ty, var_ty));
+                    .unify(|(_, ty)| ty.1, |((_, val_ty), var_ty)| (val_ty, &var_ty.0));
                 if *mutable {
                     monad
-                        .mutate_env(|env, (_, t)| env.symbol_stack.push(LetType::LetMut(t.clone())))
-                        .return_unit()
+                        .mutate_env(|env, (_, ty)| {
+                            env.symbol_stack
+                                .push((variable.name, LetType::LetMut(ty.0.clone())))
+                        })
+                        .return_unit(node_span)
                 } else {
                     monad
                         .generalized()
-                        .mutate_env(|env, (_, t)| env.symbol_stack.push(LetType::Let(t.clone())))
-                        .return_unit()
+                        .mutate_env(|env, (_, ty)| {
+                            env.symbol_stack
+                                .push((variable.name, LetType::Let(ty.0.clone())))
+                        })
+                        .return_unit(node_span)
                 }
             }
-
             Tree::If {
                 condition,
                 if_then,
@@ -1131,7 +1283,7 @@ impl<'src> TypeEnv<'src> {
                 .unified_with(Type::Builtin(BuiltinType::Bool))
                 .infer_type(if_then)
                 .infer_type(if_else)
-                .unify(|((_, t1), t2)| (t1, t2))
+                .unify(|_| if_then.span(), |((_, t1), t2)| (&t2.0, &t1.0))
                 .return_last(),
             Tree::While { condition, body } => self
                 .monad(tvg)
@@ -1139,24 +1291,26 @@ impl<'src> TypeEnv<'src> {
                 .unified_with(Type::Builtin(BuiltinType::Bool))
                 .infer_type(body)
                 .unified_with(Type::unit())
-                .return_unit(),
+                .return_unit(node_span),
             Tree::Return { value } => self
                 .monad(tvg)
                 .infer_type(value)
                 .push_from_env(|env| env.func_ret_stack.last().unwrap().clone())
-                .unify(|((_, t1), t2)| (t1, t2))
-                .return_never(),
-            Tree::Break => self.monad(tvg).return_never(),
-            Tree::Continue => self.monad(tvg).return_never(),
-        }
+                .unify(|((_, t1), _)| t1.1, |((_, t1), t2)| (&t1.0, t2))
+                .return_never(node_span),
+            Tree::Break => self.monad(tvg).return_never(node_span),
+            Tree::Continue => self.monad(tvg).return_never(node_span),
+        }?;
+        node.set_type(result.1.0.clone());
+        Ok(result)
     }
 
-    pub fn infer_type(&mut self, ir: &mut IR<'src>) -> Result<Type<'src>> {
+    pub fn infer_type(&mut self, ir: &mut IR<'src>) -> Result<'src, Type<'src>> {
         let mut tvg = TypeVarGen::new();
         self.monad(&mut tvg)
             .process_functions(ir.function_table_mut())
             .infer_type(ir.root_mut())
             .return_last()
-            .map(|(_, ty)| ty)
+            .map(|(_, ty)| ty.0)
     }
 }
