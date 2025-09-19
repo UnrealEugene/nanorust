@@ -7,7 +7,7 @@ use alloc::{
 use chumsky::span::SimpleSpan;
 use hashbrown::HashMap;
 
-use crate::ir::{FuncInfo, Node, RValue, Reference, Tree, Value, IR};
+use crate::ir::{FuncInfo, IR, Node, RValue, Reference, Tree, Value};
 
 pub type FuncOverride = Box<dyn Fn(&[RValue]) -> Result<RValue, String> + 'static>;
 
@@ -130,14 +130,14 @@ impl<'src> InterpretEnv<'src> {
                                     .get(self.var_stack.len() - index - 1)
                                     .unwrap()
                                     .0
-                            )))
+                            )));
                         }
                     },
                     _ => {
                         return Err(UnwindReason::Panic(format!(
                             "attempt to call a non-callable value {:?}",
                             value
-                        )))
+                        )));
                     }
                 };
                 let func_info = ir.function_table().get(func_index).unwrap();
@@ -189,23 +189,27 @@ impl<'src> InterpretEnv<'src> {
                             return Err(UnwindReason::Panic(format!(
                                 "attempt to assign to a function {}",
                                 ir.function_table().get(index).unwrap().name.0
-                            )))
+                            )));
                         }
                     },
                     Value::RValue(val) => {
                         return Err(UnwindReason::Panic(format!(
                             "attempt to assign to a rvalue {:?}",
                             val
-                        )))
+                        )));
                     }
                 };
                 let index = self.var_stack.len() - index - 1;
                 self.var_stack.get_mut(index).unwrap().1 = value;
                 Value::unit()
             }
-            Tree::Let { variable, value } => {
+            Tree::Let {
+                variable,
+                mutable: _,
+                value,
+            } => {
                 let value = self.interpret_node(value, ir)?.to_rvalue(self)?;
-                self.var_stack.push((*variable, value));
+                self.var_stack.push((variable.name.0, value));
                 Value::unit()
             }
             Tree::If {
@@ -219,7 +223,7 @@ impl<'src> InterpretEnv<'src> {
                         return Err(UnwindReason::Panic(format!(
                             "exepcted boolean value as if expression condition, actual {:?}",
                             val
-                        )))
+                        )));
                     }
                 };
 
@@ -234,7 +238,7 @@ impl<'src> InterpretEnv<'src> {
                         return Err(UnwindReason::Panic(format!(
                             "exepcted boolean value as while statement condition, actual {:?}",
                             val
-                        )))
+                        )));
                     }
                 };
                 if !cond_value {
@@ -244,7 +248,7 @@ impl<'src> InterpretEnv<'src> {
                 match body_result {
                     Ok(_) => {}
                     Err(UnwindReason::Panic(_)) | Err(UnwindReason::Return(_)) => {
-                        return body_result
+                        return body_result;
                     }
                     Err(UnwindReason::Break) => break Value::unit(),
                     Err(UnwindReason::Continue) => continue,
@@ -253,7 +257,7 @@ impl<'src> InterpretEnv<'src> {
             Tree::Return { value } => {
                 return Err(UnwindReason::Return(
                     self.interpret_node(value, ir)?.to_rvalue(self)?,
-                ))
+                ));
             }
             Tree::Break => return Err(UnwindReason::Break),
             Tree::Continue => return Err(UnwindReason::Continue),

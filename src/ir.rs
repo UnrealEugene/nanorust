@@ -12,9 +12,9 @@ use hashbrown::HashMap;
 use crate::{
     error::*,
     expr::Expr,
-    parser::Identifier,
+    parser::{Identifier, Variable},
     span::Spanned,
-    typing::{Polytype, Type},
+    typing::{BuiltinType, Polytype, Type},
 };
 
 pub type Result<'src, T> = core::result::Result<T, Box<dyn SemanticError + 'src>>;
@@ -37,7 +37,7 @@ pub enum RValue {
 pub trait RValueInner: Sized + Clone + Copy {
     fn into_rvalue(self) -> RValue;
     fn from_rvalue(rvalue: RValue) -> Option<Self>;
-    fn type_name() -> &'static str;
+    fn get_type() -> Type<'static>;
 }
 
 impl RValueInner for i32 {
@@ -52,8 +52,8 @@ impl RValueInner for i32 {
         }
     }
 
-    fn type_name() -> &'static str {
-        "i32"
+    fn get_type() -> Type<'static> {
+        Type::Builtin(BuiltinType::I32)
     }
 }
 
@@ -69,8 +69,8 @@ impl RValueInner for bool {
         }
     }
 
-    fn type_name() -> &'static str {
-        "bool"
+    fn get_type() -> Type<'static> {
+        Type::Builtin(BuiltinType::Bool)
     }
 }
 
@@ -388,8 +388,16 @@ impl<'src> IR<'src> {
         &self.func_table
     }
 
+    pub fn function_table_mut(&mut self) -> &mut Vec<FuncInfo<'src>> {
+        &mut self.func_table
+    }
+
     pub fn root(&self) -> &Node<'src> {
         &self.root
+    }
+
+    pub fn root_mut(&mut self) -> &mut Node<'src> {
+        &mut self.root
     }
 
     pub fn from_ast(ast: &Spanned<Expr<'src>>) -> Result<'src, IR<'src>> {
@@ -493,14 +501,15 @@ impl<'src> IR<'src> {
             }
             Expr::Let {
                 var,
-                is_mut: _,
+                is_mut,
                 val,
             } => {
                 let value_node = Self::from_ast_impl(val.as_ref(), builder)?;
                 builder.symbol_stack.push(var.name, IRSymbol::Variable);
                 Node::new(
                     Tree::Let {
-                        variable: var.name.0,
+                        variable: var.clone(),
+                        mutable: *is_mut,
                         value: Box::new(value_node),
                     },
                     expr.1,
@@ -593,10 +602,10 @@ impl<'src> IR<'src> {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct Node<'src> {
     span: SimpleSpan,
-    type_: Type<'src>,
+    _type: Type<'src>,
     tree: Tree<'src>,
 }
 
@@ -604,7 +613,7 @@ impl<'src> Node<'src> {
     fn new(tree: Tree<'src>, span: SimpleSpan) -> Self {
         Self {
             span,
-            type_: Type::Unknown,
+            _type: Type::Unknown,
             tree,
         }
     }
@@ -612,7 +621,7 @@ impl<'src> Node<'src> {
     fn empty(span: SimpleSpan) -> Self {
         Self {
             span: span.to_end(),
-            type_: Type::Unknown,
+            _type: Type::Unknown,
             tree: Tree::Scope { nodes: Vec::new() },
         }
     }
@@ -625,6 +634,10 @@ impl<'src> Node<'src> {
         &self.tree
     }
 
+    pub fn tree_mut(&mut self) -> &mut Tree<'src> {
+        &mut self.tree
+    }
+
     pub fn is_empty(&self) -> bool {
         match &self.tree {
             Tree::Scope { nodes } => nodes.is_empty(),
@@ -633,7 +646,7 @@ impl<'src> Node<'src> {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub enum Tree<'src> {
     Constant {
         value: Value,
@@ -654,7 +667,8 @@ pub enum Tree<'src> {
     },
 
     Let {
-        variable: &'src str,
+        variable: Variable<'src, Polytype<'src>>,
+        mutable: bool,
         value: Box<Node<'src>>,
     },
 

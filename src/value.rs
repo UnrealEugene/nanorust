@@ -222,7 +222,7 @@ impl<'src> Function<'src> {
     ) -> Self {
         let (var_names, var_types) = vars
             .into_iter()
-            .map(|var| (var.name, var.ty.into_inner()))
+            .map(|var| (var.name, var.ty))
             .unzip();
         let func_ty = Type::Function(var_types, Box::new(ret_type));
         assert!(
@@ -246,7 +246,7 @@ impl<'src> Function<'src> {
     ) -> Self {
         let (var_names, var_types) = vars
             .into_iter()
-            .map(|var| (var.name, var.ty.into_inner()))
+            .map(|var| (var.name, var.ty))
             .unzip();
         Function {
             params: Vec::new(),

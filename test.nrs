@@ -1,22 +1,15 @@
-fn pow2(p: i32) -> i32 {
-    let acc = 1;
-    while p > 0 {
-        acc = acc * 2;
-        p = p - 1;
+fn f(n: i32) -> i32 {
+    let mut res = 0;
+    while n > 1 {
+        println(n);
+        if n % 2 == 0 {
+            n = n / 2;
+        } else {
+            n = 3 * n + 1;
+        }
+        res = res + 1;
     }
-    acc
+    res
 }
 
-fn pow2_rec(p: i32) -> i32 {
-    if p <= 0 {
-        return 1
-    }
-    let acc = pow2_rec(p / 2);
-    acc = acc * acc;
-    if p % 2 == 1 {
-        acc = 2 * acc;
-    }
-    acc
-}
-
-pow2_rec(20)
+f(77031)

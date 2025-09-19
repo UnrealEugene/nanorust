@@ -135,10 +135,10 @@ impl<'src> PartialEq for Identifier<'src> {
 
 impl<'src> Eq for Identifier<'src> {}
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Variable<'src, T = Type<'src>> {
     pub name: Identifier<'src>,
-    pub ty: RefCell<T>,
+    pub ty: T,
 }
 
 pub fn parse_stmt<'src, I>() -> impl Parser<'src, I, Spanned<Expr<'src>>, ParseError<'src>>
@@ -159,8 +159,8 @@ where
                     .ignore_then(just(Token::Mut).or_not().map(|opt| opt.is_some()))
                     .then(type_.clone())
                     .map(|(is_mut, ty)| Type::Reference {
-                        is_mut,
-                        ty: Box::new(ty),
+                        mutable: is_mut,
+                        inner: Box::new(ty),
                     });
 
                 let type_tuple = type_
@@ -196,7 +196,6 @@ where
                         .ignore_then(type_.clone())
                         .or_not()
                         .map(Option::unwrap_or_default)
-                        .map(RefCell::new),
                 )
                 .map(|(name, type_)| Variable { name, ty: type_ })
                 .boxed();
@@ -471,7 +470,7 @@ where
                 .map(|((is_mut, var), val)| Expr::Let {
                     var: Variable {
                         name: var.name,
-                        ty: RefCell::new(Polytype::from_unknown(var.ty.take())),
+                        ty: Polytype::from_unknown(var.ty),
                     },
                     is_mut,
                     val: Box::new(val),

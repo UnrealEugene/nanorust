@@ -22,6 +22,7 @@ use nanorust::{
     ir::{IR, RValue, RValueInner},
     lexer::Token,
     span::Spanned,
+    typing::TypeEnv,
 };
 use slog::Drain;
 use yansi::Paint;
@@ -175,7 +176,7 @@ where
 {
     Box::new(move |args| {
         let arg = T::from_rvalue(args[0].clone())
-            .ok_or_else(|| format!("expected `{}` as an argument", T::type_name()))?;
+            .ok_or_else(|| format!("expected `{}` as an argument", T::get_type()))?;
         Ok(f(arg).into_rvalue())
     })
 }
@@ -188,9 +189,9 @@ where
 {
     Box::new(move |args| {
         let left = A::from_rvalue(args[0].clone())
-            .ok_or_else(|| format!("expected `{}` as a first operand", A::type_name()))?;
+            .ok_or_else(|| format!("expected `{}` as a first operand", A::get_type()))?;
         let right = B::from_rvalue(args[1].clone())
-            .ok_or_else(|| format!("expected `{}` as a second operand", B::type_name()))?;
+            .ok_or_else(|| format!("expected `{}` as a second operand", B::get_type()))?;
         Ok(f(left, right).into_rvalue())
     })
 }
@@ -203,9 +204,9 @@ where
 {
     Box::new(move |args| {
         let left = A::from_rvalue(args[0].clone())
-            .ok_or_else(|| format!("expected `{}` as a first operand", A::type_name()))?;
+            .ok_or_else(|| format!("expected `{}` as a first operand", A::get_type()))?;
         let right = B::from_rvalue(args[1].clone())
-            .ok_or_else(|| format!("expected `{}` as a second operand", B::type_name()))?;
+            .ok_or_else(|| format!("expected `{}` as a second operand", B::get_type()))?;
         Ok(f(&left, &right).into_rvalue())
     })
 }
@@ -250,7 +251,7 @@ fn interpret_string<'src>(
     info!("sucessfully produced AST for {}", name);
     debug!("AST: {:?}", ast);
 
-    let ir: IR<'_> = match IR::from_ast(&ast) {
+    let mut ir: IR<'_> = match IR::from_ast(&ast) {
         Ok(ir) => ir,
         Err(error) => {
             return Ok(InterpretResult::Report(vec![
@@ -262,6 +263,16 @@ fn interpret_string<'src>(
         }
     };
     debug!("IR: {:?}", ir.root());
+
+    let mut type_env = TypeEnv::new(
+        ir.function_table()
+            .iter()
+            .map(|info| info.type_.clone())
+            .collect(),
+    );
+    type_env
+        .infer_type(&mut ir)
+        .unwrap_or_else(|err| panic!("{}", err));
 
     let mut env = InterpretEnv::new();
     env.register_builtins(
@@ -286,7 +297,7 @@ fn interpret_string<'src>(
             (
                 "println",
                 Box::new(|args: &[RValue]| {
-                    println!("{:?}", args[0]);
+                    println!("{}", args[0].to_string());
                     Ok(RValue::default())
                 }),
             ),
