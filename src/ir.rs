@@ -12,7 +12,7 @@ use hashbrown::HashMap;
 use crate::{
     error::*,
     expr::Expr,
-    parser::{Identifier, Variable},
+    parser::{Identifier, VarInfo, Variable},
     span::Spanned,
     typing::{BuiltinType, Polytype, Type},
 };
@@ -111,7 +111,7 @@ impl Value {
 
 pub struct FuncInfo<'src> {
     pub name: Identifier<'src>,
-    pub args: Vec<Identifier<'src>>,
+    pub args: Vec<VarInfo<'src>>,
     pub type_: Polytype<'src>,
     pub span: SimpleSpan,
     pub ret_type_span: SimpleSpan,
@@ -502,13 +502,12 @@ impl<'src> IR<'src> {
                 }
                 Node::empty(expr.1)
             }
-            Expr::Let { var, is_mut, val } => {
+            Expr::Let { var, val } => {
                 let value_node = Self::from_ast_impl(val.as_ref(), builder)?;
-                builder.symbol_stack.push(var.name, IRSymbol::Variable);
+                builder.symbol_stack.push(var.info.name, IRSymbol::Variable);
                 Node::new(
                     Tree::Let {
                         variable: var.clone(),
-                        mutable: *is_mut,
                         value: Box::new(value_node),
                     },
                     expr.1,
@@ -519,7 +518,9 @@ impl<'src> IR<'src> {
                 func,
                 ..
             } => {
-                builder.symbol_stack.push_fn_frame(func.args.clone());
+                builder
+                    .symbol_stack
+                    .push_fn_frame(func.args.iter().map(|arg| arg.name).collect::<Vec<_>>());
                 let body_node = Self::from_ast_impl(&func.body, builder)?;
                 builder.symbol_stack.pop_fn_frame();
                 builder
@@ -677,7 +678,6 @@ pub enum Tree<'src> {
 
     Let {
         variable: Variable<'src, Polytype<'src>>,
-        mutable: bool,
         value: Box<Node<'src>>,
     },
 

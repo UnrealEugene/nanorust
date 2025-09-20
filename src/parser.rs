@@ -136,8 +136,14 @@ impl<'src> PartialEq for Identifier<'src> {
 impl<'src> Eq for Identifier<'src> {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Variable<'src, T = Type<'src>> {
+pub struct VarInfo<'src> {
     pub name: Identifier<'src>,
+    pub mutable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Variable<'src, T = Type<'src>> {
+    pub info: VarInfo<'src>,
     pub ty: T,
 }
 
@@ -188,8 +194,10 @@ where
                 .labelled("type")
             });
 
-            let var = ident
-                .clone()
+            let var = just(Token::Mut)
+                .or_not()
+                .map(|opt| opt.is_some())
+                .then(ident.clone())
                 .then(
                     just(Token::Ctrl(":"))
                         .labelled("type annotation")
@@ -197,7 +205,10 @@ where
                         .or_not()
                         .map(Option::unwrap_or_default),
                 )
-                .map(|(name, type_)| Variable { name, ty: type_ })
+                .map(|((is_mut, name), ty)| Variable {
+                    info: VarInfo { name, mutable: is_mut },
+                    ty,
+                })
                 .boxed();
 
             let ret_type = just(Token::Op("->"))
@@ -469,15 +480,13 @@ where
             });
 
             let let_expr = just(Token::Let)
-                .ignore_then(just(Token::Mut).or_not().map(|opt| opt.is_some()))
-                .then(var.clone())
+                .ignore_then(var.clone())
                 .then(just(Token::Op("=")).ignore_then(expr.clone()))
-                .map(|((is_mut, var), val)| Expr::Let {
+                .map(|(var, val)| Expr::Let {
                     var: Variable {
-                        name: var.name,
+                        info: var.info,
                         ty: Polytype::from_unknown(var.ty),
                     },
-                    is_mut,
                     val: Box::new(val),
                 })
                 .map_with(span_wrap)

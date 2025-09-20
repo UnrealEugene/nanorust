@@ -36,7 +36,6 @@ pub enum Expr<'src> {
     Seq(Box<Spanned<Self>>, Box<Spanned<Self>>), // any
     Let {
         var: Variable<'src, Polytype<'src>>,
-        is_mut: bool,
         val: Box<Spanned<Self>>,
     }, // Void
     Function {

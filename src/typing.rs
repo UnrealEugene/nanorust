@@ -663,22 +663,25 @@ impl<'src> Polytype<'src> {
 
 #[derive(Debug, Clone)]
 pub enum LetType<'src> {
-    Let(Polytype<'src>),
-    LetMut(Type<'src>),
+    Poly(Polytype<'src>),
+    Mono { mutable: bool, inner: Type<'src> },
 }
 
 impl<'src> HMType<'src> for LetType<'src> {
     fn get_free_vars(&self) -> HashSet<TypeVar> {
         match self {
-            LetType::Let(ty) => ty.get_free_vars(),
-            LetType::LetMut(ty) => ty.get_free_vars(),
+            LetType::Poly(inner) => inner.get_free_vars(),
+            LetType::Mono { inner, .. } => inner.get_free_vars(),
         }
     }
 
     fn substitute(&self, subst: &Subst<'src>) -> Self {
         match self {
-            LetType::Let(ty) => LetType::Let(ty.substitute(subst)),
-            LetType::LetMut(ty) => LetType::LetMut(ty.substitute(subst)),
+            LetType::Poly(inner) => LetType::Poly(inner.substitute(subst)),
+            LetType::Mono { mutable, inner } => LetType::Mono {
+                mutable: *mutable,
+                inner: inner.substitute(subst),
+            },
         }
     }
 }
@@ -949,8 +952,14 @@ impl<'g, 'src, I: TupleChain<'src>> TypeEnvMonad<'g, 'src, I> {
             })
             .mutate_env(|env, ((_, args_ty), ret_ty)| {
                 for (i, ty) in args_ty.iter().enumerate() {
-                    env.symbol_stack
-                        .push((*func_info.args.get(i).unwrap(), LetType::LetMut(ty.clone())));
+                    let var_info = func_info.args.get(i).unwrap();
+                    env.symbol_stack.push((
+                        var_info.name,
+                        LetType::Mono {
+                            mutable: var_info.mutable,
+                            inner: ty.clone(),
+                        },
+                    ));
                 }
                 env.func_ret_stack.push(ret_ty.clone())
             })
@@ -1125,15 +1134,15 @@ impl<'src> TypeEnv<'src> {
                 .get(self.symbol_stack.len() - *index - 1)
                 .unwrap()
             {
-                (name, LetType::Let(ty)) => Type::LValue {
+                (name, LetType::Poly(inner)) => Type::LValue {
                     mutable: false,
                     def_ident: *name,
-                    inner: Box::new(ty.instantiate(tvg)),
+                    inner: Box::new(inner.instantiate(tvg)),
                 },
-                (name, LetType::LetMut(ty)) => Type::LValue {
-                    mutable: true,
+                (name, LetType::Mono { mutable, inner }) => Type::LValue {
+                    mutable: *mutable,
                     def_ident: *name,
-                    inner: Box::new(ty.clone()),
+                    inner: Box::new(inner.clone()),
                 },
             },
         }
@@ -1247,7 +1256,6 @@ impl<'src> TypeEnv<'src> {
                 .return_unit(node_span),
             Tree::Let {
                 variable,
-                mutable,
                 value,
             } => {
                 let monad = self
@@ -1256,11 +1264,16 @@ impl<'src> TypeEnv<'src> {
                     .instantiated()
                     .infer_type(value)
                     .unify(|(_, ty)| ty.1, |((_, val_ty), var_ty)| (val_ty, &var_ty.0));
-                if *mutable {
+                if variable.info.mutable {
                     monad
                         .mutate_env(|env, (_, ty)| {
-                            env.symbol_stack
-                                .push((variable.name, LetType::LetMut(ty.0.clone())))
+                            env.symbol_stack.push((
+                                variable.info.name,
+                                LetType::Mono {
+                                    mutable: true,
+                                    inner: ty.0.clone(),
+                                },
+                            ))
                         })
                         .return_unit(node_span)
                 } else {
@@ -1268,7 +1281,7 @@ impl<'src> TypeEnv<'src> {
                         .generalized()
                         .mutate_env(|env, (_, ty)| {
                             env.symbol_stack
-                                .push((variable.name, LetType::Let(ty.0.clone())))
+                                .push((variable.info.name, LetType::Poly(ty.0.clone())))
                         })
                         .return_unit(node_span)
                 }

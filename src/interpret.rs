@@ -164,7 +164,7 @@ impl<'src> InterpretEnv<'src> {
                             .args
                             .iter()
                             .zip(arg_vals.into_iter())
-                            .for_each(|(name, value)| self.var_stack.push((name.0, value)));
+                            .for_each(|(info, value)| self.var_stack.push((info.name.0, value)));
                         let result = self.interpret_node(func_info.body.as_ref().unwrap(), ir);
                         let result_value = match result {
                             Ok(value) => value.to_rvalue(self)?,
@@ -205,11 +205,10 @@ impl<'src> InterpretEnv<'src> {
             }
             Tree::Let {
                 variable,
-                mutable: _,
                 value,
             } => {
                 let value = self.interpret_node(value, ir)?.to_rvalue(self)?;
-                self.var_stack.push((variable.name.0, value));
+                self.var_stack.push((variable.info.name.0, value));
                 Value::unit()
             }
             Tree::If {

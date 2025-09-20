@@ -6,7 +6,7 @@ use hashbrown::HashMap;
 
 use crate::{
     expr::Expr,
-    parser::{Identifier, Variable},
+    parser::{Identifier, VarInfo, Variable},
     span::Spanned,
     typing::{Polytype, Type},
 };
@@ -206,7 +206,7 @@ impl<'src> Pointer<'src> {
 #[derive(Debug)]
 pub struct Function<'src> {
     pub params: Vec<Identifier<'src>>,
-    pub args: Vec<Identifier<'src>>,
+    pub args: Vec<VarInfo<'src>>,
     pub decl_span: SimpleSpan,
     pub ret_type_span: SimpleSpan,
     pub body: Box<Spanned<Expr<'src>>>,
@@ -221,9 +221,9 @@ impl<'src> Function<'src> {
         decl_span: SimpleSpan,
         body: Spanned<Expr<'src>>,
     ) -> Self {
-        let (var_names, var_types) = vars
+        let (var_infos, var_types) = vars
             .into_iter()
-            .map(|var| (var.name, var.ty))
+            .map(|var| (var.info, var.ty))
             .unzip();
         let func_ty = Type::Function(var_types, Box::new(ret_type.0));
         assert!(
@@ -232,7 +232,7 @@ impl<'src> Function<'src> {
         );
         Function {
             params: type_params.clone(),
-            args: var_names,
+            args: var_infos,
             body: Box::new(body),
             decl_span: decl_span,
             ret_type_span: ret_type.1,
@@ -246,13 +246,13 @@ impl<'src> Function<'src> {
         decl_span: SimpleSpan,
         body: Spanned<Expr<'src>>,
     ) -> Self {
-        let (var_names, var_types) = vars
+        let (var_infos, var_types) = vars
             .into_iter()
-            .map(|var| (var.name, var.ty))
+            .map(|var| (var.info, var.ty))
             .unzip();
         Function {
             params: Vec::new(),
-            args: var_names,
+            args: var_infos,
             body: Box::new(body),
             decl_span: decl_span,
             ret_type_span: ret_type.1,
